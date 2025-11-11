@@ -4,15 +4,15 @@ ArcGIS Python Toolbox for querying the NSW BioNet API to retrieve up-to-date fau
 
 ## Overview
 
-This toolbox provides an ArcGIS Python tool that connects to the NSW Government BioNet Species Sightings API and retrieves fauna species records with their conservation status under:
+This toolbox provides an ArcGIS Python tool that connects to the NSW Government BioNet OData API and retrieves fauna species records with their conservation status under:
 - **BC Act**: NSW Biodiversity Conservation Act 2016 (State)
 - **EPBC Act**: Environment Protection and Biodiversity Conservation Act 1999 (Commonwealth)
 
 ## Features
 
-- Query fauna species from NSW BioNet API
+- Query fauna species from NSW BioNet OData API
 - Filter by fauna group (Mammals, Birds, Reptiles, Amphibians, Fish, or All)
-- Optional spatial filtering using Area of Interest polygon
+- Optional authentication for accessing sensitive species data
 - Returns distinct species list with conservation status
 - Outputs results as ArcGIS table
 
@@ -34,16 +34,19 @@ This toolbox provides an ArcGIS Python tool that connects to the NSW Government 
 
 ### Tool Parameters
 
-1. **Area of Interest (Optional)**: Polygon feature layer to spatially filter results
-2. **Fauna Group**: Select from:
+1. **BioNet Username (Optional)**: Your BioNet Atlas username for authenticated access to sensitive data
+2. **BioNet Password (Optional)**: Your BioNet Atlas password
+3. **Fauna Group**: Select from:
    - All Fauna
    - Mammals
    - Birds
    - Reptiles
    - Amphibians
    - Fish
-3. **Maximum Records**: Maximum number of records to retrieve (default: 1000)
-4. **Output Table**: Location and name for the output table
+4. **Maximum Records**: Maximum number of records to retrieve (default: 1000)
+5. **Output Table**: Location and name for the output table
+
+**Note on Authentication**: Anonymous access is supported but may have restrictions on sensitive species data. For full access to threatened species records with precise locations, provide your BioNet Atlas credentials.
 
 ### Output Fields
 
@@ -58,13 +61,13 @@ The output table includes the following fields:
 - **BCActStatus**: Conservation status under NSW BC Act (e.g., Endangered, Vulnerable)
 - **EPBCActStatus**: Conservation status under Commonwealth EPBC Act
 - **SensitiveClass**: Sensitivity classification for the species
-- **SightingDate**: Date of the species sighting
+- **EventDate**: Date of the species sighting event
 
 ### Example Workflow
 
 1. Open ArcGIS Pro and add the toolbox
 2. Open the "Query BioNet Fauna Species" tool
-3. (Optional) Select a polygon feature layer as Area of Interest
+3. (Optional) Enter your BioNet username and password for authenticated access
 4. Choose a fauna group (e.g., "Mammals")
 5. Set maximum records (e.g., 1000)
 6. Specify output table location
@@ -73,9 +76,12 @@ The output table includes the following fields:
 
 ## API Information
 
-This toolbox queries the NSW BioNet Species Sightings REST API:
-- **Endpoint**: https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/EDP/BionetSpeciesSightings/MapServer
-- **Data Standard**: [BioNet Species Sighting Web Services Data Standard](https://www.environment.nsw.gov.au/sites/default/files/bionet-species-sighting-data-standard-200167.pdf)
+This toolbox queries the NSW BioNet OData API:
+- **Endpoint**: https://data.bionet.nsw.gov.au/biosvcapp/odata
+- **Entity Set**: SpeciesSightings_CoreData
+- **Protocol**: OData v4.0
+- **Data Standard**: [BioNet Species Sighting Data Standard](https://www.environment.nsw.gov.au/sites/default/files/2025-06/bionet-species-sighting-data-standard-250124.pdf)
+- **Developer Guide**: [BioNet Web Service Developer Guidelines](https://www.environment.nsw.gov.au/sites/default/files/2025-02/bionet-developer-guidelines-250050_2.pdf)
 
 ## Conservation Status Categories
 
@@ -97,14 +103,19 @@ This toolbox queries the NSW BioNet Species Sightings REST API:
 
 ### No records returned
 - Check your internet connection
-- Verify the Area of Interest overlaps with NSW
+- Try providing BioNet credentials for authenticated access
 - Try increasing the maximum records parameter
 - Try selecting "All Fauna" instead of a specific group
 
+### Authentication errors
+- Verify your BioNet Atlas username and password are correct
+- Create a BioNet account at https://www.bionet.nsw.gov.au if you don't have one
+- Try running without credentials for anonymous access (limited data)
+
 ### API timeout
 - Reduce the maximum records parameter
-- Use a smaller Area of Interest
 - Try again later if the API is experiencing high traffic
+- Check your network firewall settings
 
 ### Table creation errors
 - Ensure you have write permissions to the output location
@@ -127,8 +138,13 @@ For issues with:
 
 ## Version History
 
+- **1.1.0** (2025-11-11): Updated to use OData API
+  - Changed from REST API to OData endpoint
+  - Added authentication support for sensitive data
+  - Updated field names to match OData schema
+  - Improved error handling
+  
 - **1.0.0** (2025-11-11): Initial release
   - Query fauna species from NSW BioNet API
   - Filter by fauna group
-  - Spatial filtering support
   - Conservation status (BC Act and EPBC Act)

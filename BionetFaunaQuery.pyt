@@ -2,11 +2,11 @@
 """
 NSW BioNet Fauna Query Toolbox
 
-This ArcGIS Python Toolbox queries the NSW BioNet API to retrieve an up-to-date
+This ArcGIS Python Toolbox queries the NSW BioNet OData API to retrieve an up-to-date
 fauna species list with their State (BC Act) and Commonwealth (EPBC Act) 
 conservation classifications.
 
-API Endpoint: https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/EDP/BionetSpeciesSightings/MapServer/0/query
+API Endpoint: https://data.bionet.nsw.gov.au/biosvcapp/odata
 """
 
 import arcpy
@@ -14,6 +14,7 @@ import json
 import urllib.request
 import urllib.parse
 import urllib.error
+import base64
 from datetime import datetime
 
 
@@ -40,44 +41,51 @@ class BionetFaunaQueryTool(object):
     def getParameterInfo(self):
         """Define parameter definitions"""
         
-        # Parameter 0: Area of Interest (optional polygon feature class)
+        # Parameter 0: Username (optional, for authenticated access)
         param0 = arcpy.Parameter(
-            displayName="Area of Interest (Optional)",
-            name="area_of_interest",
-            datatype="GPFeatureLayer",
+            displayName="BioNet Username (Optional)",
+            name="username",
+            datatype="GPString",
             parameterType="Optional",
             direction="Input")
-        param0.filter.list = ["Polygon"]
         
-        # Parameter 1: Fauna Group filter
+        # Parameter 1: Password (optional, for authenticated access)
         param1 = arcpy.Parameter(
+            displayName="BioNet Password (Optional)",
+            name="password",
+            datatype="GPStringHidden",
+            parameterType="Optional",
+            direction="Input")
+        
+        # Parameter 2: Fauna Group filter
+        param2 = arcpy.Parameter(
             displayName="Fauna Group",
             name="fauna_group",
             datatype="GPString",
             parameterType="Required",
             direction="Input")
-        param1.filter.type = "ValueList"
-        param1.filter.list = ["All Fauna", "Mammals", "Birds", "Reptiles", "Amphibians", "Fish"]
-        param1.value = "All Fauna"
+        param2.filter.type = "ValueList"
+        param2.filter.list = ["All Fauna", "Mammals", "Birds", "Reptiles", "Amphibians", "Fish"]
+        param2.value = "All Fauna"
         
-        # Parameter 2: Maximum number of records
-        param2 = arcpy.Parameter(
+        # Parameter 3: Maximum number of records
+        param3 = arcpy.Parameter(
             displayName="Maximum Records",
             name="max_records",
             datatype="GPLong",
             parameterType="Required",
             direction="Input")
-        param2.value = 1000
+        param3.value = 1000
         
-        # Parameter 3: Output Table
-        param3 = arcpy.Parameter(
+        # Parameter 4: Output Table
+        param4 = arcpy.Parameter(
             displayName="Output Table",
             name="output_table",
             datatype="DETable",
             parameterType="Required",
             direction="Output")
         
-        params = [param0, param1, param2, param3]
+        params = [param0, param1, param2, param3, param4]
         return params
 
     def isLicensed(self):
@@ -99,28 +107,29 @@ class BionetFaunaQueryTool(object):
         """The source code of the tool."""
         
         # Get parameters
-        area_of_interest = parameters[0].valueAsText
-        fauna_group = parameters[1].valueAsText
-        max_records = parameters[2].value
-        output_table = parameters[3].valueAsText
+        username = parameters[0].valueAsText
+        password = parameters[1].valueAsText
+        fauna_group = parameters[2].valueAsText
+        max_records = parameters[3].value
+        output_table = parameters[4].valueAsText
         
         arcpy.AddMessage("Starting NSW BioNet fauna species query...")
         arcpy.AddMessage(f"Fauna Group: {fauna_group}")
         arcpy.AddMessage(f"Maximum Records: {max_records}")
         
         try:
-            # Build the query
-            where_clause = self._build_where_clause(fauna_group)
-            arcpy.AddMessage(f"Query filter: {where_clause}")
+            # Build the OData filter
+            odata_filter = self._build_odata_filter(fauna_group)
+            arcpy.AddMessage(f"Query filter: {odata_filter}")
             
-            # Get geometry filter if area of interest is provided
-            geometry_filter = None
-            if area_of_interest:
-                geometry_filter = self._get_geometry_from_feature(area_of_interest)
-                arcpy.AddMessage("Using spatial filter from Area of Interest")
-            
-            # Query the BioNet API
-            species_data = self._query_bionet_api(where_clause, geometry_filter, max_records, messages)
+            # Query the BioNet OData API
+            species_data = self._query_bionet_odata_api(
+                odata_filter, 
+                max_records, 
+                username, 
+                password, 
+                messages
+            )
             
             if not species_data:
                 arcpy.AddWarning("No species records found matching the criteria")
@@ -138,99 +147,102 @@ class BionetFaunaQueryTool(object):
             arcpy.AddError(f"Error executing tool: {str(e)}")
             raise
 
-    def _build_where_clause(self, fauna_group):
-        """Build the WHERE clause based on fauna group selection"""
+    def _build_odata_filter(self, fauna_group):
+        """Build the OData $filter clause based on fauna group selection"""
         
         fauna_class_map = {
-            "Mammals": "Class = 'Mammalia'",
-            "Birds": "Class = 'Aves'",
-            "Reptiles": "Class = 'Reptilia'",
-            "Amphibians": "Class = 'Amphibia'",
-            "Fish": "Class IN ('Actinopterygii', 'Chondrichthyes', 'Myxini', 'Petromyzontida')"
+            "Mammals": "Class eq 'Mammalia'",
+            "Birds": "Class eq 'Aves'",
+            "Reptiles": "Class eq 'Reptilia'",
+            "Amphibians": "Class eq 'Amphibia'",
+            "Fish": "(Class eq 'Actinopterygii' or Class eq 'Chondrichthyes' or Class eq 'Myxini' or Class eq 'Petromyzontida')"
         }
         
         if fauna_group == "All Fauna":
-            # Query all fauna classes
-            return ("Class IN ('Mammalia', 'Aves', 'Reptilia', 'Amphibia', "
-                   "'Actinopterygii', 'Chondrichthyes', 'Myxini', 'Petromyzontida')")
+            # Query all fauna classes using OData syntax
+            return ("(Class eq 'Mammalia' or Class eq 'Aves' or Class eq 'Reptilia' or "
+                   "Class eq 'Amphibia' or Class eq 'Actinopterygii' or Class eq 'Chondrichthyes' or "
+                   "Class eq 'Myxini' or Class eq 'Petromyzontida')")
         else:
-            return fauna_class_map.get(fauna_group, "1=1")
+            return fauna_class_map.get(fauna_group, "")
 
-    def _get_geometry_from_feature(self, feature_layer):
-        """Extract geometry from feature layer for spatial query"""
-        try:
-            # Get the extent of the input feature
-            desc = arcpy.Describe(feature_layer)
-            extent = desc.extent
-            
-            # Return extent as JSON for API query
-            geometry_json = {
-                "xmin": extent.XMin,
-                "ymin": extent.YMin,
-                "xmax": extent.XMax,
-                "ymax": extent.YMax,
-                "spatialReference": {"wkid": extent.spatialReference.factoryCode}
-            }
-            return geometry_json
-        except Exception as e:
-            arcpy.AddWarning(f"Could not extract geometry: {str(e)}")
-            return None
-
-    def _query_bionet_api(self, where_clause, geometry_filter, max_records, messages):
-        """Query the NSW BioNet API and return species data"""
+    def _query_bionet_odata_api(self, odata_filter, max_records, username, password, messages):
+        """Query the NSW BioNet OData API and return species data"""
         
-        # BioNet Species Sightings API endpoint
-        base_url = "https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/EDP/BionetSpeciesSightings/MapServer/0/query"
+        # BioNet OData API endpoint for Species Sightings Core Data
+        base_url = "https://data.bionet.nsw.gov.au/biosvcapp/odata/SpeciesSightings_CoreData"
         
-        # Build query parameters
-        params = {
-            "where": where_clause,
-            "outFields": "ScientificName,CommonName,Class,Order,Family,Kingdom,BCActStatus,EPBCActStatus,SensitiveClass,SightingDate",
-            "returnGeometry": "false",
-            "returnDistinctValues": "true",
-            "orderByFields": "ScientificName",
-            "resultRecordCount": max_records,
-            "f": "json"
+        # Build OData query parameters
+        # Select fields we need and apply filter
+        query_params = {
+            "$select": "ScientificName,CommonName,Class,Order,Family,Kingdom,BCActStatus,EPBCActStatus,SensitiveClass,EventDate",
+            "$top": str(max_records),
+            "$orderby": "ScientificName"
         }
         
-        # Add geometry filter if provided
-        if geometry_filter:
-            params["geometry"] = json.dumps(geometry_filter)
-            params["geometryType"] = "esriGeometryEnvelope"
-            params["spatialRel"] = "esriSpatialRelIntersects"
+        # Add filter if provided
+        if odata_filter:
+            query_params["$filter"] = odata_filter
+        
+        # Build the full URL
+        query_string = urllib.parse.urlencode(query_params)
+        full_url = f"{base_url}?{query_string}"
+        
+        arcpy.AddMessage("Querying NSW BioNet OData API...")
+        arcpy.AddMessage(f"URL: {base_url}")
         
         try:
-            # Encode parameters
-            data = urllib.parse.urlencode(params).encode('utf-8')
+            # Create the request
+            req = urllib.request.Request(full_url)
+            req.add_header('Accept', 'application/json')
             
-            arcpy.AddMessage("Querying NSW BioNet API...")
+            # Add authentication if provided
+            if username and password:
+                arcpy.AddMessage("Using authenticated access")
+                credentials = f"{username}:{password}"
+                encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
+                req.add_header('Authorization', f'Basic {encoded_credentials}')
+            else:
+                arcpy.AddMessage("Using anonymous access (some data may be restricted)")
             
             # Make the request
-            req = urllib.request.Request(base_url, data=data)
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with urllib.request.urlopen(req, timeout=120) as response:
                 result = json.loads(response.read().decode('utf-8'))
             
-            # Check for errors in response
-            if 'error' in result:
-                error_msg = result['error'].get('message', 'Unknown error')
-                arcpy.AddError(f"API Error: {error_msg}")
-                return []
-            
-            # Extract features
-            if 'features' in result:
-                return [feature['attributes'] for feature in result['features']]
+            # OData returns data in 'value' array
+            if 'value' in result:
+                records = result['value']
+                
+                # Get distinct species (OData doesn't have built-in distinct)
+                # Use a dictionary to track unique species by scientific name
+                unique_species = {}
+                for record in records:
+                    sci_name = record.get('ScientificName', '')
+                    if sci_name and sci_name not in unique_species:
+                        unique_species[sci_name] = record
+                
+                return list(unique_species.values())
             else:
-                arcpy.AddWarning("No features returned from API")
+                arcpy.AddWarning("No data returned from OData API")
                 return []
                 
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else "No error details"
+            arcpy.AddError(f"HTTP Error {e.code} querying BioNet OData API: {e.reason}")
+            arcpy.AddError(f"Details: {error_body}")
+            if e.code == 401:
+                arcpy.AddError("Authentication failed. Please provide valid BioNet credentials.")
+            return []
         except urllib.error.URLError as e:
-            arcpy.AddError(f"Network error querying BioNet API: {str(e)}")
+            arcpy.AddError(f"Network error querying BioNet OData API: {str(e)}")
             return []
         except json.JSONDecodeError as e:
-            arcpy.AddError(f"Error parsing API response: {str(e)}")
+            arcpy.AddError(f"Error parsing OData API response: {str(e)}")
             return []
         except Exception as e:
-            arcpy.AddError(f"Unexpected error querying API: {str(e)}")
+            arcpy.AddError(f"Unexpected error querying OData API: {str(e)}")
+            import traceback
+            arcpy.AddError(traceback.format_exc())
             return []
 
     def _create_output_table(self, species_data, output_table, messages):
@@ -253,7 +265,7 @@ class BionetFaunaQueryTool(object):
             arcpy.management.CreateTable(out_path, table_name)
             full_table_path = f"{out_path}/{table_name}"
             
-            # Add fields
+            # Add fields - EventDate instead of SightingDate for OData
             field_definitions = [
                 ("ScientificName", "TEXT", 255),
                 ("CommonName", "TEXT", 255),
@@ -264,7 +276,7 @@ class BionetFaunaQueryTool(object):
                 ("BCActStatus", "TEXT", 100),
                 ("EPBCActStatus", "TEXT", 100),
                 ("SensitiveClass", "TEXT", 100),
-                ("SightingDate", "DATE", None)
+                ("EventDate", "DATE", None)
             ]
             
             for field_name, field_type, field_length in field_definitions:
@@ -285,16 +297,22 @@ class BionetFaunaQueryTool(object):
                     for field in fields:
                         value = record.get(field)
                         
-                        # Handle date conversion
-                        if field == "SightingDate" and value:
+                        # Handle date conversion for OData format
+                        if field == "EventDate" and value:
                             try:
-                                # BioNet dates are in milliseconds since epoch
-                                value = datetime.fromtimestamp(value / 1000.0)
+                                # OData dates are in ISO 8601 format (e.g., "2023-01-15T00:00:00Z")
+                                # Parse the date string
+                                if isinstance(value, str):
+                                    # Remove timezone info if present
+                                    date_str = value.replace('Z', '').split('.')[0]
+                                    value = datetime.fromisoformat(date_str)
+                                else:
+                                    value = None
                             except:
                                 value = None
                         
                         # Handle None/null values for text fields
-                        if value is None and field != "SightingDate":
+                        if value is None and field != "EventDate":
                             value = ""
                         
                         row.append(value)
@@ -303,8 +321,8 @@ class BionetFaunaQueryTool(object):
             
             arcpy.AddMessage(f"Inserted {len(species_data)} records into output table")
             
-            # Set output parameter
-            arcpy.SetParameter(3, full_table_path)
+            # Set output parameter (parameter 4 now due to added username/password)
+            arcpy.SetParameter(4, full_table_path)
             
         except Exception as e:
             arcpy.AddError(f"Error creating output table: {str(e)}")
