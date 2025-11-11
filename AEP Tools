@@ -1,0 +1,3452 @@
+# -*- coding: utf-8 -*-
+"""
+v2
+
+Set of tools for AEP to process various datasets.
+
+Created by The Spatial Lab
+
+www.thespatiallab.com.au
+
+ghill@thespatiallab.com.au
+
+v002 adds map generation tools and tool categories
+
+"""
+import time
+
+import arcpy
+import os
+from pathlib import Path
+from datetime import datetime
+
+from pandas.io.common import file_exists
+
+
+class Toolbox:
+    def __init__(self):
+        """Define the toolbox (the name of the toolbox is the name of the
+        .pyt file)."""
+        self.label = "AEP Tools v002"
+        self.alias = "AEP Tools v002"
+
+        # List of tool classes associated with this toolbox
+        self.tools = [MergeGPX, TrimGPX, ExportLayouts, generateMaps, Adddefqueries, feature2GPX, bioatlas, batchclip,
+                      cleanshpfiles, gdb2shp, svtmsummary, searchlotdp]
+
+import os
+from datetime import datetime
+from pathlib import Path
+import arcpy
+
+class MergeGPX:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Merge GPX"
+        self.description = "Merge GPX into a single feature class that retains the file name of the gpx"
+        self.category = "GPS Files"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Input GPX files",
+            name="Input_GPX_files",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True
+        )
+
+        param1 = arcpy.Parameter(
+            displayName='Extract Geometry as',
+            name='geomtype',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input'
+        )
+
+        param2 = arcpy.Parameter(
+            displayName="Output layer",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output"
+        )
+
+        todaydate = datetime.today().strftime('%Y%m%d')
+        param2.value = "Merged_GPX_files_" + todaydate
+
+        param1.filter.type = "ValueList"
+        param1.filter.list = ['Tracks', 'Points']
+        param1.value = 'Tracks'
+
+        param0.filter.list = ['gpx']
+
+        param3 = arcpy.Parameter(
+            displayName="Reproject to GDA2020",
+            name="outproj",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+
+        param3.filter.type = "ValueList"
+        param3.filter.list = ['As per environment setting', 'Zone 56', 'Zone 55', 'Zone 54',
+                              'GDA2020 (geographic - long/lats)']
+        param3.value = 'Zone 56'
+        params = [param0, param1, param2, param3]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        return
+
+    def updateMessages(self, parameters):
+        return
+
+    def execute(self, parameters, messages):
+        raw_filelist = parameters[0].valueAsText
+        geomtype = parameters[1].valueAsText
+        finaloutfc = parameters[2].valueAsText
+        outproj = parameters[3].valueAsText
+
+        # Normalise user input list
+        filelist = []
+        if raw_filelist:
+            for part in raw_filelist.split(";"):
+                s = part.strip().strip("'").strip('"')
+                if s:
+                    filelist.append(s)
+
+        messages.addMessage(f'Importing GPX files as {geomtype}')
+        outlist = []
+
+        for raw in filelist:
+            # Resolve and validate the path
+            try:
+                p = Path(raw).expanduser()
+                # Avoid resolve(strict=True) to tolerate paths that only differ in case; check existence below
+                p = p.resolve()
+            except Exception:
+                messages.addWarningMessage(f"Skipping: could not resolve path: {raw}")
+                continue
+
+            if not p.exists():
+                messages.addWarningMessage(f"Skipping: path does not exist: {p}")
+                continue
+            if not p.is_file():
+                messages.addWarningMessage(f"Skipping: not a file: {p}")
+                continue
+            if p.suffix.lower() != ".gpx":
+                messages.addWarningMessage(f"Skipping: not a .gpx file: {p.name}")
+                continue
+
+            # Basic readability / non-empty check (helps avoid OSError: Invalid argument during XML parse)
+            try:
+                with open(p, "rb") as fh:
+                    head = fh.read(64)
+                if not head:
+                    messages.addWarningMessage(f"Skipping: empty GPX file: {p.name}")
+                    continue
+            except Exception as e:
+                messages.addWarningMessage(f"Skipping: cannot read file {p.name} ({e})")
+                continue
+
+            # Build a safe output name for in-memory feature class
+            filename = (p.stem
+                        .replace(" ", "_")
+                        .replace("-", "_")
+                        .replace("+", "_")
+                        .replace("&", "and")
+                        .replace(".", "uDOTu")
+                        .replace("(", "bDxTL")
+                        .replace(")", "bDxTR"))
+            if filename and filename[0].isdigit():
+                filename = "_" + filename  # FIXED bug: was "_" + file
+
+            try:
+                if geomtype == 'Tracks':
+                    outfc = f"memory\\{filename}_Tracks"
+                    arcpy.conversion.GPXtoFeatures(
+                        Input_GPX_File=str(p),
+                        Output_Feature_class=outfc,
+                        Output_Type="TRACKS_AS_LINES"
+                    )
+                else:
+                    outfc = f"memory\\{filename}_Points"
+                    arcpy.conversion.GPXtoFeatures(
+                        Input_GPX_File=str(p),
+                        Output_Feature_class=outfc,
+                        Output_Type="POINTS"
+                    )
+
+                outlist.append(outfc)
+                messages.addMessage(f"✔ Imported {p.name}")
+
+            except arcpy.ExecuteError:
+                # Keep processing other files, surface useful GP messages
+                messages.addWarningMessage(f"GPXtoFeatures failed for {p.name}: {arcpy.GetMessages(2)}")
+            except OSError as e:
+                # ElementTree.parse() inside GPXtoFeatures can surface as OSError: Invalid argument
+                messages.addWarningMessage(f"Skipping {p.name}: invalid GPX or unreadable file ({e})")
+            except Exception as e:
+                messages.addWarningMessage(f"Skipping {p.name}: unexpected error ({e})")
+
+        # Nothing read successfully
+        if not outlist:
+            raise arcpy.ExecuteError("No valid GPX files were imported. Nothing to merge.")
+
+        # ----- Coordinate system / transformation (unchanged logic) -----
+        if outproj == 'Zone 56':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_56",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",153.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'Zone 55':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_55",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",147.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'Zone 54':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_54",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",141.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'As per environment setting':
+            outprojstr = arcpy.env.outputCoordinateSystem
+            outtrans = arcpy.env.geographicTransformations
+        if outproj == 'GDA2020 (geographic - long/lats)':
+            outprojstr = r'GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+
+        # Merge with environment override
+        with arcpy.EnvManager(outputCoordinateSystem=outprojstr, geographicTransformations=outtrans):
+            arcpy.management.Merge(
+                inputs=outlist,
+                output=finaloutfc,
+                field_mappings=None,
+                add_source="ADD_SOURCE_INFO"
+            )
+
+        # Rename source field
+        arcpy.management.AlterField(finaloutfc, "MERGE_SRC", 'Source_GPX', 'Source GPX')
+
+        # Add geodesic length when output is geographic or using environment and geometry == Tracks
+        if (outproj in ('GDA2020 (geographic - long/lats)', 'As per environment setting')) and geomtype == 'Tracks':
+            arcpy.management.CalculateGeometryAttributes(
+                in_features=finaloutfc,
+                geometry_property="Length_m LENGTH_GEODESIC",
+                length_unit="METERS",
+                area_unit="",
+                coordinate_system='GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]',
+                coordinate_format="SAME_AS_INPUT"
+            )
+
+        # Tidy up Source_GPX labels (mirror your existing convention)
+        with arcpy.da.UpdateCursor(finaloutfc, ["Source_GPX"]) as cursor:
+            for row in cursor:
+                row[0] = (row[0]
+                          .replace("memory\\", "")
+                          .replace("_", " ")
+                          .replace("uDOTu", ".")
+                          .replace("bDxTL", "(")
+                          .replace("bDxTR", ")"))
+                cursor.updateRow(row)
+        del cursor, row
+        messages.addMessage(f'Output merged layer created at {finaloutfc}')
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and added to the display."""
+        try:
+            project = arcpy.mp.ArcGISProject('CURRENT')
+            active_map = project.activeMap
+            if active_map:
+                out_layer = active_map.listLayers(os.path.basename(parameters[2].valueAsText))[0]
+                symbology = out_layer.symbology
+                symbology.updateRenderer('UniqueValueRenderer')
+                symbology.renderer.fields = ['Source_GPX']
+                out_layer.symbology = symbology
+        except Exception:
+            pass
+        return
+
+
+class TrimGPX:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Trim tracks"
+        self.description = "Remove sections of track outside the subject land such as tails which are tracks back to the office or home as the staff member forgot to stop the gps"
+        self.category = "GPS Files"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Input Track Layer",
+            name="Input_track_layer",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input")
+
+        param1 = arcpy.Parameter(
+            displayName="Input Subject Land Layer",
+            name="Input_subject_layer",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input")
+
+        param2 = arcpy.Parameter(
+            displayName="Output layer",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output")
+
+        todaydate = datetime.today().strftime('%Y%m%d')
+        param2.value = "Trimmed_tracks_" + todaydate
+
+        param3 = arcpy.Parameter(
+            displayName="Subject Land Buffer Distance (metres)",
+            name="in_buffer",
+            datatype="GPLong",
+            parameterType="Required",
+            direction="Input")
+        param3.value = 30
+
+        param4 = arcpy.Parameter(
+            displayName='Sections to remove',
+            name='remove_type',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param4.filter.type = "ValueList"
+        param4.filter.list = ['Tails only', 'Any part outside subject land']
+        param4.value = 'Tails only'
+
+        # param4 = arcpy.Parameter(
+        #    displayName="Remove isolated sections length below (metres)",
+        #    name="in_minlength",
+        #    datatype="GPLong",
+        #    parameterType="Required",
+        #    direction="Input")
+        # param4.value=5
+
+        params = [param0, param1, param2, param3, param4]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+
+        if parameters[1].value:
+            parameters[1].clearMessage()
+            result = arcpy.management.GetCount(parameters[1].valueAsText)
+            count = int(result[0])
+            if count > 1:
+                parameters[1].setWarningMessage(
+                    "The subject land layer has more than one record or more than one record selected.")
+
+        return
+
+    def execute(self, parameters, messages):
+        import string
+        import random
+
+        # using random to make a layer id
+        res = ''.join(random.choices(string.ascii_letters,
+                                     k=7))  # initializing size of string
+
+        trackl = parameters[0].valueAsText
+        subjectl = parameters[1].valueAsText
+        outfc = parameters[2].valueAsText
+        bufferdist = int(parameters[3].valueAsText)
+        remove_type = parameters[4].valueAsText
+
+        # messages.addMessage(f'Track layer {trackl}')
+        # messages.addMessage(f'Subject land layer {subjectl}')
+        # messages.addMessage(f'Output layer {outfc}')
+        # messages.addMessage(f'Buffer distance {bufferdist}')
+
+        bufflayname = "memory\\gpx_trim_tool_extent_" + str(res)
+
+        arcpy.analysis.Buffer(
+            in_features=subjectl,
+            out_feature_class=bufflayname,
+            buffer_distance_or_field=f"{bufferdist} Meters",
+            line_side="FULL",
+            line_end_type="ROUND",
+            dissolve_option="ALL",
+            dissolve_field=None,
+            method="PLANAR"
+        )
+
+        # buffer_results=arcpy.management.MakeFeatureLayer(bufflayname,"temp_Buffer")
+        # bufferlay=buffer_results.getOutput(0)
+        # project = arcpy.mp.ArcGISProject('CURRENT')
+        # active_map = project.activeMap
+        # active_map.addLayer(bufferlay)
+        if remove_type == 'Any part outside subject land':
+            arcpy.analysis.Clip(
+                in_features=trackl,
+                clip_features=bufflayname,
+                out_feature_class=outfc,
+                cluster_tolerance=None
+            )
+        else:
+            """
+            Potential new process to trim true tails
+
+            Look at the distance between each vertices and if greater than a specified distance eg 100m then break line
+            at that node and delete section. The remainder of the line should fall completely outside the study area and can be deleted
+
+
+            """
+            # Input and output settings
+            input_fc = trackl
+            output_fc = outfc
+
+            # Maximum allowed segment length
+            MAX_SEGMENT_LENGTH = 50  # meters
+
+            # Prepare output feature class
+            spatial_ref = arcpy.Describe(input_fc).spatialReference
+            if arcpy.Exists(output_fc):
+                arcpy.Delete_management(output_fc)
+            arcpy.CreateFeatureclass_management(os.path.dirname(output_fc), os.path.basename(output_fc), "POLYLINE",
+                                                spatial_reference=spatial_ref)
+
+            with arcpy.da.InsertCursor(output_fc, ["SHAPE@"]) as insert_cursor:
+                with arcpy.da.SearchCursor(input_fc, ["SHAPE@"]) as search_cursor:
+                    for row in search_cursor:
+                        polyline = row[0]
+
+                        # For multipart features, handle each part separately
+                        for part in polyline:
+                            new_points = []
+                            current_part = []
+
+                            for i in range(len(part) - 1):
+                                start_pt = part[i]
+                                end_pt = part[i + 1]
+
+                                segment = arcpy.Polyline(arcpy.Array([start_pt, end_pt]), spatial_ref)
+                                segment_length = segment.length
+
+                                current_part.append(start_pt)
+
+                                if segment_length > MAX_SEGMENT_LENGTH:
+                                    # Save the current collected segment as a new polyline
+                                    if len(current_part) > 1:
+                                        new_line = arcpy.Polyline(arcpy.Array(current_part), spatial_ref)
+                                        insert_cursor.insertRow([new_line])
+                                    # Start new part from current end_pt
+                                    current_part = [start_pt, end_pt]
+                                    new_line = arcpy.Polyline(arcpy.Array(current_part), spatial_ref)
+                                    insert_cursor.insertRow([new_line])
+                                    current_part = []  # reset
+
+                            # Handle last segment in part
+                            if current_part:
+                                current_part.append(part[-1])
+                                if len(current_part) > 1:
+                                    new_line = arcpy.Polyline(arcpy.Array(current_part), spatial_ref)
+                                    insert_cursor.insertRow([new_line])
+            del insert_cursor, search_cursor, i
+            arcpy.management.CalculateGeometryAttributes(
+                in_features=output_fc,
+                geometry_property="numvert POINT_COUNT",
+                length_unit="",
+                area_unit="",
+                coordinate_system=spatial_ref,
+                coordinate_format="SAME_AS_INPUT"
+            )
+            trim_results = arcpy.management.MakeFeatureLayer(output_fc, os.path.basename(output_fc))
+            trimlay = trim_results.getOutput(0)
+            project = arcpy.mp.ArcGISProject('CURRENT')
+            active_map = project.activeMap
+            active_map.addLayer(trimlay)
+
+            arcpy.management.SelectLayerByAttribute(
+                in_layer_or_view=trimlay,
+                selection_type="NEW_SELECTION",
+                where_clause="numvert = 2",
+                invert_where_clause=None
+            )
+            result = int(arcpy.management.GetCount(in_rows=trimlay)[0])
+            messages.addMessage(
+                f"Removed {result} sections of perfectly straight lines over 50m these are considered tails")
+            if result > 0:
+                arcpy.management.DeleteFeatures(in_features=trimlay)
+
+            # find all the line sections completely outside the study area
+            arcpy.management.SelectLayerByLocation(
+                in_layer=trimlay,
+                overlap_type="INTERSECT",  # note we are inverting the intersection
+                select_features="test_boundary",
+                search_distance='',
+                selection_type="NEW_SELECTION",
+                invert_spatial_relationship="INVERT"
+            )
+
+            arcpy.management.SelectLayerByLocation(
+                in_layer=trimlay,
+                overlap_type="INTERSECT",
+                select_features="test_boundary",
+                search_distance=f"{bufferdist} Meters",
+                selection_type="NEW_SELECTION",
+                invert_spatial_relationship="INVERT"
+            )
+
+            result = int(arcpy.management.GetCount(in_rows=trimlay)[0])
+            messages.addMessage(
+                f"Removed {result} sections of track outside the study area using the specified buffer distance of {bufferdist} meters")
+            if result > 0:
+                arcpy.management.DeleteFeatures(in_features=trimlay)
+
+            """
+            print("Line splitting completed.")
+
+            pt_layname_1 = "memory\\intersectpoints_" + str(res)
+            arcpy.analysis.Intersect(
+                in_features=f"{trackl} #;{bufflayname} #",
+                out_feature_class=pt_layname_1,
+                join_attributes="ALL",
+                cluster_tolerance=None,
+                output_type="POINT"
+            )
+            pt_layname = "memory\\intersectpoints_single_" + str(res)
+            arcpy.management.MultipartToSinglepart(
+                in_features=pt_layname_1,
+                out_feature_class=pt_layname
+            )
+
+            buffer_results = arcpy.management.MakeFeatureLayer(pt_layname, "temp_Buffer_pts")
+            bufferlay = buffer_results.getOutput(0)
+            project = arcpy.mp.ArcGISProject('CURRENT')
+            active_map = project.activeMap
+            active_map.addLayer(bufferlay)
+
+            spatialref1 = arcpy.Describe(pt_layname).spatialReference
+            spatialref2 = arcpy.Describe(trackl).spatialReference
+            assert spatialref1.name == spatialref2.name, "Ensure both feature classes have the same projected coordinate system"
+
+            points = [row[0] for row in arcpy.da.SearchCursor(pt_layname, "SHAPE@")]
+            lines = [row[0] for row in arcpy.da.SearchCursor(trackl, "SHAPE@")]
+            cutlines = list()
+            iterations = 0
+
+            def CutLines(line):
+                iscut = "Invalid"
+                if line.length > 0.0:  # Make sure it's not an empty geometry.
+                    iscut = "Not Cut"
+                    for point in points:
+                        messages.addMessage(f'point {point}')
+                        if line.distanceTo(
+                                point) < 1.0:  # Even "coincident" points can show up as spatially non-coincident in their floating-point XY values, so we set up a tolerance.
+                            messages.addMessage(f'distance from line {line.distanceTo(point)}')
+                            snappoint = line.snapToLine(
+                                point).firstPoint  # To ensure coincidence, snap the point to the line before proceeding.
+                            messages.addMessage(f'snap point {snappoint}')
+                            if not (snappoint.equals(line.lastPoint) and snappoint.equals(
+                                    line.firstPoint)):  # Make the sure the point isn't on a line endpoint, otherwise cutting will produce an empty geometry.
+                                cutline1, cutline2 = line.cut(arcpy.Polyline(arcpy.Array(
+                                    [arcpy.Point(snappoint.X + 1.0, snappoint.Y + 1.0),
+                                     arcpy.Point(snappoint.X - 1.0, snappoint.Y - 1.0)]), spatialref1))  # Cut the line.
+
+                                # TODO does the cutline parts intersect with any other points excluding the current point being processed
+                                # if so intsert the line into lines list so it gets processed again
+                                # final result will keep line sections that intersect at more than 1 point (ie re-entered the site)
+                                # only insert into cutlines if it does not intersect any more points
+                                # layer must be in UTM not WGS for the distances to work
+
+                                # if cutline1.length > 0.0 and cutline2.length > 0.0: # Make sure both descendents have non-zero geometry.
+                                #    lines.insert(0, cutline1) # Feed the cut lines back into the "line" list to be recut.
+                                #    lines.insert(0, cutline2) # The cut loop will only exit when all lines cannot be recut smaller and smaller (without producing zero-length geometries).
+                                #    iscut = "Cut"
+                                # if iscut == "Not Cut":
+                                cutlines.insert(0, cutline1)
+                                # cutlines.insert(0, cutline2)
+
+                        else:
+                            cutlines.insert(0, line)  # line does not require cutting as it not within a 1m of a point
+                # messages.addMessage(f'iscut value {iscut}')
+                # lines.remove(line)
+
+            messages.addMessage(f'line count {len(lines)}')
+            for line in lines:
+                CutLines(line)
+                # iterations += 1
+                # messages.addMessage(f'iteration {iterations}')
+                # if iterations > 500: # Fail-safe to stop an infinite loop if something goes wrong (or if more than 500 points intersect a single line).
+                #    break
+            arcpy.CreateFeatureclass_management("memory", "Temp_poly_aeptool_001", "POLYLINE", None, None, None,
+                                                spatialref2)
+
+            # Insert each cut line into the new feature class.
+
+            with arcpy.da.InsertCursor("memory\\Temp_poly_aeptool_001", "SHAPE@") as insertcursor:
+                for cutline in cutlines:
+                    insertcursor.insertRow((cutline,))
+                    messages.addMessage('Process completed')
+
+            buffer_results = arcpy.management.MakeFeatureLayer("memory\\Temp_poly_aeptool_001", "temp_Buffer")
+            bufferlay = buffer_results.getOutput(0)
+            project = arcpy.mp.ArcGISProject('CURRENT')
+            active_map = project.activeMap
+            active_map.addLayer(bufferlay)
+            """
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        try:
+            project = arcpy.mp.ArcGISProject('CURRENT')
+            active_map = project.activeMap
+
+            if active_map:
+                out_layer = active_map.listLayers(os.path.basename(parameters[2].valueAsText))[0]
+
+                symbology = out_layer.symbology
+                symbology.updateRenderer('UniqueValueRenderer')
+                symbology.renderer.fields = ['MERGE_SRC']
+                out_layer.symbology = symbology
+
+        except Exception:
+            pass
+        return
+
+
+class ExportLayouts:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Export all Layouts"
+        self.description = "Exports all layouts to a specific folder"
+        self.category = "Map Production"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Output Folder (note: overwrites matching filenames)",
+            name="outfolder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input")
+
+        param1 = arcpy.Parameter(
+            displayName="Output Format",
+            name="outformat",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input")
+
+        param1.filter.type = "ValueList"
+        param1.filter.list = ['PDF', 'JPG']
+        param1.value = 'PDF'
+
+        """
+        param2 = arcpy.Parameter(
+            displayName="Output layer",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output")
+
+        todaydate=datetime.today().strftime('%Y%m%d')
+        param2.value="Trimmed_tracks_"+todaydate
+
+        param3 = arcpy.Parameter(
+            displayName="Subject Land Buffer Distance (metres)",
+            name="in_buffer",
+            datatype="GPLong",
+            parameterType="Required",
+            direction="Input")
+        param3.value=30
+
+        param4 = arcpy.Parameter(
+            displayName='Sections to remove',
+            name='remove_type',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param4.filter.type = "ValueList"
+        param4.filter.list = ['Tails only', 'Any part outside subject land']
+        param4.value = 'Tails only'
+
+        #param4 = arcpy.Parameter(
+        #    displayName="Remove isolated sections length below (metres)",
+        #    name="in_minlength",
+        #    datatype="GPLong",
+        #    parameterType="Required",
+        #    direction="Input")
+        #param4.value=5
+        """
+        params = [param0, param1]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+
+        return
+
+    def execute(self, parameters, messages):
+        import string
+        import random
+
+        outfolder = parameters[0].valueAsText
+        outformat = parameters[1].valueAsText
+
+        import arcpy
+        from datetime import datetime
+
+        # Access the ArcGIS Pro project
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+        # Get the current date in the desired format
+        current_date = datetime.now().strftime("%B %Y")
+
+        # mod_elm,mod_eml_orig =[],[]
+
+        """
+        Variable = Address:  The Lakes Way, Forster
+        Client: Inquiry Property Pty Ltd | AEP Ref: 5189 | Date: <dyn type="layout" name="AEP Layout Portrait A3" property="dateExported" format="MMMM yyyy"/>"
+        """
+
+        # Loop through the layouts and text elements
+        for lyt in aprx.listLayouts():
+            for elm in lyt.listElements('TEXT_ELEMENT'):
+                if "dateExported" in elm.text:
+                    # assumes only one dateExported appears on the map!
+                    mod_eml_orig = elm.text
+                    # Update the text element with the dynamic date
+                    start = elm.text.find("<dyn type=")
+                    end = elm.text.find("/>")
+
+                    substring = elm.text[start:end + 2]
+                    elm.text = elm.text.replace(substring, current_date)
+
+                    # replace \ with / for python to be more reliable
+                    outfolder = outfolder.replace("\\", "/")
+
+                    if outformat == "PDF":
+                        lyt.exportToPDF(os.path.join(outfolder, f"{lyt.name}"), resolution=300,
+                                        image_compression="JPEG2000",
+                                        clip_to_elements=False)
+                    if outformat == "JPG":
+                        lyt.exportToJPEG(os.path.join(outfolder, f"{lyt.name}"), resolution=300, jpeg_quality=90,
+                                         clip_to_elements=False)
+
+                    # put the orginal elm settings back
+                    elm.text = mod_eml_orig
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+
+        return
+
+
+class generateMaps:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Generate Maps (Arb testing only)"
+        self.description = "Tool to generate standard maps for reports"
+        self.category = "Map Production"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+
+        projectlay = "G:\\Shared drives\\99.3 GIS Admin\\Production\\Layer Files\\AEP - Study Area.lyrx"
+
+        from configparser import ConfigParser
+        import os
+
+        config_u = None
+        config_p = None
+
+        # Create a ConfigParser object
+        config_object = ConfigParser()
+
+        # Read the configuration from the 'config.ini' file
+        if file_exists(os.path.expanduser('~') + "\\bnagistoolconfig.ini"):
+            config_object.read(os.path.expanduser('~') + "\\bnagistoolconfig.ini")
+
+            # Access the USERINFO section
+            userinfo = config_object["USERINFO"]
+
+            config_u = userinfo["n"]
+            config_p = userinfo["t"]
+
+        param0 = arcpy.Parameter(
+            displayName='Report Type',
+            name='reporttype',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param1 = arcpy.Parameter(
+            displayName="Impact area/development footprint layer (if applicable)",
+            name="Impact_layer",
+            datatype="GPFeatureLayer",
+            parameterType="Optional",
+            direction="Input")
+
+        param2 = arcpy.Parameter(
+            displayName='Project number',
+            name='projectnumber',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param2.filter.type = "ValueList"
+        try:
+            projlist = []
+            # for projrow in arcpy.da.SearchCursor(projectlay, ['SHAPE@', 'OID@'],where_clause=f"project_number='{projectnumber}'"):
+            for projrow in arcpy.da.SearchCursor(projectlay, ['project_number'],
+                                                 where_clause='project_number is not null'):
+                projlist.append(projrow[0])
+            param2.filter.list = sorted(projlist, reverse=True)
+        except:
+            # messages.addErrorMessage(f'Could not access project study area layer file at {projectlay}.')
+            pass
+
+        param3 = arcpy.Parameter(
+            displayName='Client Name',
+            name='clientname',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param4 = arcpy.Parameter(
+            displayName='Address',
+            name='Address',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+
+        param5 = arcpy.Parameter(
+            displayName="Nearmap Layer (if available)",
+            name="nearmaplayer",
+            datatype="DERasterDataset",
+            parameterType="Optional",
+            direction="Input")
+
+        param6 = arcpy.Parameter(
+            displayName="Username for secure BioNet records access (Both username & password are CaSE sensitive)",
+            name="username",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input")
+        param6.value = config_u
+
+        param7 = arcpy.Parameter(
+            displayName="Password",
+            name="password",
+            datatype="GPStringHidden",
+            parameterType="Optional",
+            direction="Input")
+        param7.value = config_p
+
+        """
+        param2 = arcpy.Parameter(
+            displayName="Output layer",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output")
+
+        todaydate = datetime.today().strftime('%Y%m%d')
+        param2.value = "Merged_GPX_files_" + todaydate
+        """
+        param0.filter.type = "ValueList"
+        script_path = os.path.dirname(os.path.splitext(os.path.realpath(__file__))[
+                                          0])  # realpath includes the the python script file not just the path
+        # find the location of the 'maps' folder which dictates which set of maps can be created
+        reportsubfolders = [f.name for f in os.scandir(os.path.join(script_path, "maps")) if f.is_dir()]
+
+        param0.filter.list = reportsubfolders
+
+        params = [param0, param1, param2, param3, param4, param5, param6, param7]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        if parameters[0].valueAsText == 'BDAR - SBDAR - BCAR':
+            parameters[6].enabled = True
+            parameters[7].enabled = True
+        else:
+            parameters[6].enabled = False
+            parameters[7].enabled = False
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        import os
+        # import subprocess
+
+        arcpy.env.overwriteOutput = True
+
+        # messages.addMessage('Pausing Google Drive Syncing while tool runs')
+        # result = subprocess.run(["C:\Program Files\Google\Drive File Stream\launch.bat","--pause_syncing"], shell=True)
+
+        # stylefile=r"G:\Shared drives\01 Reference\03 Mapping Base Data\002 Templates\ArcPro Templates\ArcPro Styles\AEP Styles.stylx"
+
+        reporttype = parameters[0].valueAsText
+        impactlayer = parameters[1].value
+        clientname = parameters[3].valueAsText
+        nearmaplayer = parameters[5].value
+        address = parameters[4].valueAsText
+        projectnumber = parameters[2].valueAsText
+        bausername = parameters[6].valueAsText
+        bapassword = parameters[7].valueAsText
+
+        messages.addMessage(f'Making maps for {projectnumber}')
+        project = arcpy.mp.ArcGISProject('CURRENT')
+
+        def zoomextent(figitem, layeritem, zoomfactor):
+            lyt = project.listLayouts(figitem)[0]
+            mf = lyt.listElements("MAPFRAME_ELEMENT", "Map Frame")[0]
+            mf.camera.setExtent(mf.getLayerExtent(layeritem, True, True))
+            mf.camera.scale = mf.camera.scale * zoomfactor
+            mf.camera.scale = round(mf.camera.scale, -2)
+            if mf.camera.scale < 200:
+                mf.camera.scale = 500
+            mv = project.activeView
+            mv.camera.setExtent(projrow[0].extent)
+
+        bufferscreated = False
+        batchclipdone=False
+
+        if project.isReadOnly:
+            messages.addErrorMessage('Error: project is read only. Exiting.')
+            exit
+
+        messages.addMessage(f'Report type is {reporttype}')
+
+        current_Workspace = arcpy.env.workspace
+        messages.addMessage(
+            f'{current_Workspace} is the current workspace, layers generated by this tool will be created at this location.')
+        script_path = os.path.dirname(os.path.splitext(os.path.realpath(__file__))[
+                                          0])  # realpath includes the the python script file not just the path
+
+        # TODO need to get the projection of the current workspace and apply to all maps imported from templates
+
+        pagxpath = os.path.join(script_path, "maps", reporttype)
+        arcpy.env.workspace = pagxpath
+
+        messages.addMessage(f'{pagxpath} is the map admin directory.')
+
+        figlist = arcpy.ListFiles("*.pagx")
+
+        if len(figlist) == 0:
+            messages.addErrorMessage(
+                f'No maps found for {reporttype} at {arcpy.env.workspace}. Cannot proceed seek assistance from GIS Admin team.')
+            exit
+
+        # set the workspace back to the project geodatabase
+        arcpy.env.workspace = current_Workspace
+
+        # get the map details that launched the script
+        startmap = project.activeMap
+
+        for fig in figlist:
+            figname = fig.replace(".pagx", "")
+            messages.addMessage(f'Creating {figname}')
+            # create the map
+            # check if map already used and rename as obsolete/timestamp checking maps and layouts
+            map = project.listMaps(figname)
+            for renamemap in map:
+                messages.addMessage(f'{figname} name already exists renaming existing to obsolete.')
+                renamemap.name = figname + '_obsolete_' + datetime.now().strftime("%Y%m%d_%H%M")
+
+            lyt = project.listLayouts(figname)
+            for renamelyt in lyt:
+                # messages.addMessage(f'{figname} name already exists renaming existing to obsolete.')
+                renamelyt.name = figname + '_obsolete_' + datetime.now().strftime("%Y%m%d_%H%M")
+
+            # import the figure layout file so that the layout and map are created
+            project.importDocument(pagxpath + "\\" + fig)
+
+            map = project.listMaps(figname)[0]
+
+            map.openView()
+            # Update the layer definition queries so that each layer is only showing the data for the project number #TODO check that other project number fields are not required
+
+            studyarealay = ""  # holds the project study area layer in each figure (if found)
+            arbtalay = ""  # holds arb tree assessment layer
+
+            lyr = map.listLayers()
+
+            # loop through each layer looking for {projectnumber} in preset definition query
+            for layer in lyr:
+                if layer.supports("DEFINITIONQUERY"):
+                    query = layer.listDefinitionQueries()
+                    ## List Dictionary
+                    for dic in query:
+                        # Open dictionary item
+                        for key, value in dic.items():
+                            if key == 'sql':
+                                # messages.addMessage(dic[key])  #uncomment to review definition queries
+                                # Find Replace
+                                defquery = dic[key].replace("{projectnumber}", projectnumber)
+
+                                # Update DIctionary
+                                dic[key] = defquery
+                                # messages.addMessage(dic[key]) #uncomment to review definition queries
+                    ## messages.addMessage("")
+                    ## messages.addMessage("New Query " + str(query))
+
+                    ## update Definition Queries
+                    layer.updateDefinitionQueries(query)
+
+                    if layer.name == "Project Study Area" or layer.name == "Study Area":
+                        studyarealay = layer
+
+                    # arb layers
+                    if 'Aborist' in reporttype:
+                        if layer.name == "Tree Assessment - Retention Value":  # TODO check that the def query is only project number not just retained trees etc.. in case of different order of generation
+                            messages.addMessage("Tree assessment layer found")
+                            arbtalay = layer
+
+            lyt = project.listLayouts(figname)[0]
+            mf = lyt.listElements("MAPFRAME_ELEMENT", "Map Frame")[0]
+            # messages.addMessage(mf)
+
+            # zoom to project extent (in the layout and map)
+            # get the extent of the project area
+            for projrow in arcpy.da.SearchCursor(studyarealay, ['SHAPE@', 'OID@'],
+                                                 where_clause=f"project_number='{projectnumber}'"):
+                objid = projrow[1]
+                arcpy.management.SelectLayerByAttribute(in_layer_or_view=studyarealay, selection_type="NEW_SELECTION",
+                                                        where_clause=f"objectid={objid}", invert_where_clause=None)
+                break
+
+            if 'Figure 1' in fig:
+                zoomextent(figname, studyarealay, 3)
+            else:
+                zoomextent(figname, studyarealay, 1.3)
+            arcpy.management.SelectLayerByAttribute(in_layer_or_view=studyarealay, selection_type="CLEAR_SELECTION")
+
+            """
+                mf.camera.setExtent(mf.getLayerExtent(studyarealay, True, True))
+                #mf.camera.setExtent(mf.getLayerExtent(lyr, True, True))
+                mv = project.activeView
+                mv.camera.setExtent(projrow[0].extent)
+                arcpy.management.SelectLayerByAttribute(in_layer_or_view=studyarealay,selection_type="CLEAR_SELECTION")
+
+                break  #only go to first record matching the project number, there should hopefully only be one
+
+            if 'Figure 1' in fig:
+                mf.camera.scale = mf.camera.scale * 3
+            else:
+                mf.camera.scale = mf.camera.scale * 1.3
+
+            if mf.camera.scale < 200:
+                mf.camera.scale=500
+
+            #round the scale to nearest 100
+            mf.camera.scale = round(mf.camera.scale,-2)
+            """
+
+            for elm in lyt.listElements("TEXT_ELEMENT"):
+                if elm.name == "ProjectDetails":
+                    elm.text = elm.text.replace("{address}", address).replace("{client}", clientname).replace(
+                        "{projectnumber}", projectnumber)
+
+                elif elm.name == "RefText" and nearmaplayer:
+                    elm.text = elm.text.replace("ESRI", "Nearmap")
+                # elif elm.name == "Text 1":
+                #    elm.text = propertyname
+
+            if impactlayer and 'Figure 1' not in fig:
+                map.addLayer(impactlayer)
+                implyr = map.listLayers(impactlayer)[0]
+
+            if nearmaplayer:
+                try:
+                    # add the nearmap layer to the map
+                    map.addLayer(nearmaplayer)
+                except Exception:
+
+                    messages.addWarningMessage('Warning: could not add the Nearmap layer to the map.')
+                    pass
+
+            """
+            BDAR specific template
+            """
+            def style1500(layer1500):
+                sym = layer1500.symbology
+                sym.renderer.symbol.applySymbolFromGallery("1500m Buffer")
+                #sym.updateRenderer('SimpleRenderer')
+                #symbol = sym.renderer.symbol
+                ##sym.renderer.symbol.color = {'RGB': [0, 0, 0, 0]}
+                ##sym.renderer.symbol.outlineColor = {'CMYK': [66, 0, 100, 0, 100]}
+                ##sym.renderer.symbol.outlineWidth = 2.0
+                layer1500.symbology = sym
+                #arcpy.RefreshActiveView()
+
+            if 'BDAR' in reporttype:
+                # messages.addMessage('BDAR specific changes')
+                if not bufferscreated:
+                    messages.addMessage('Creating 1500m buffer')
+                    arcpy.analysis.Buffer(
+                        in_features=studyarealay,
+                        out_feature_class="Buffer_1500m",
+                        buffer_distance_or_field="1500 meters",
+                        line_side="FULL",
+                        line_end_type="ROUND",
+                        dissolve_option="NONE",
+                        dissolve_field=None,
+                        method="GEODESIC"
+                    )
+
+
+                    buffer_results = arcpy.management.MakeFeatureLayer(
+                        in_features="Buffer_1500m",
+                        out_layer="Buffer 1500m")
+                    bufferlay = buffer_results.getOutput(0)
+
+                    bufferscreated = True
+
+                if not batchclipdone:
+
+                    messages.addMessage('Creating clip layers')
+                    #work out which zone the map in is so we create the layers in the right projection
+                    sr=map.spatialReference
+                    mapwkid=sr.factoryCode
+
+                    wkid_to_zone={7854:54,7855:55,7856:56}
+
+                    zone=wkid_to_zone.get(mapwkid,None)
+
+                    if zone is not None:
+                        datazone="Zone "+str(zone)
+                    else:
+                        messages.addWarningMessage("Map not in a UTM zone projection eg GDA2020 Zone 56. Zone 56 will be used as the default")
+                        datazone="Zone 56"
+
+                    #messages.addMessage(f'zone passed {zone}')
+                    layerlist=[[r'G:\Shared drives\01 Reference\03 Mapping Base Data\Vegetation Communities Mapping\SVTM 2024-11\SVTM_NSW_Extant_PCT_vC2_0_M2_1_106\SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview.gdb\SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview','SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview'],
+                               [r'G:\Shared drives\99.3 GIS Admin\Production\Layer Files\NSW Spatial - HydroLine.lyrx','NSW HydroLine'],
+                               [r'G:\Shared drives\99.3 GIS Admin\Production\Layer Files\NSW Spatial - Water Feature.lyrx','WaterFeature']]
+
+                    layernamelist=[]
+
+                    for layer in layerlist:
+                        map.addDataFromPath(layer[0])
+                        layernamelist.append(layer[1])
+                        layerliststr=";".join(layernamelist)
+
+
+                    clip_tool = batchclip()
+                    clip_params = clip_tool.getParameterInfo()
+                    clip_params[0].value =layerliststr
+                    clip_params[1].value = bufferlay
+                    clip_params[2].value = arcpy.env.workspace
+                    clip_params[3].value = datazone
+
+                    #todo does not appear to overwrite existing need to look into it, might be a local setting issue
+                    clip_tool.execute(clip_params, messages)
+
+                    for layer in layernamelist:
+                        rl=map.listLayers(layer)[0]
+                        map.removeLayer(rl)
+
+                    del rl,layerlist,layerliststr
+
+                    batchclipdone=True
+
+                if figname == 'Figure 2 - Location Map':
+                    map.addLayer(bufferlay)
+                    buff1500 = map.listLayers(bufferlay)[0]
+                    zoomextent(figname, buff1500, 1.3)
+                    style1500(buff1500)
+                    for layer in layernamelist:
+                        #get the database name using same convention as batchclip tool
+                        import re
+                        regex = re.compile('[^a-zA-Z]')
+                        x2 = regex.sub('', layer)
+
+                        map.addDataFromPath(arcpy.env.workspace+"/"+x2+"_clipped")
+
+
+                        # if veg add def query - set style
+                        if layer=='SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview':
+                            veglay = map.listLayers('SVTMNSWExtantPCTvCMQuickview_clipped')[0]
+                            veglay.definitionQuery="PCTID <> 0"
+
+                            sym = veglay.symbology
+                            sym.renderer.symbol.applySymbolFromGallery("Native Vegetation")
+                            veglay.symbology = sym
+
+                        # if hydroline set style
+                        if layer=='NSW HydroLine':
+                            hydrolay = map.listLayers('NSWHydroLine_clipped')[0]
+
+                            sym = hydrolay.symbology
+                            sym.renderer.symbol.applySymbolFromGallery("Hydroline")
+                            hydrolay.symbology = sym
+
+                        # if waterfeature set style
+                        if layer=='WaterFeature':
+                            hydrolay = map.listLayers('WaterFeature_clipped')[0]
+
+                            sym = hydrolay.symbology
+                            sym.renderer.symbol.applySymbolFromGallery("Hydroarea")
+                            hydrolay.symbology = sym
+
+                        #TODO still need stream order buffers
+                        #TODO coastal sepp layers (do we clip this?)
+                        #TODO habitat features
+                        #todo grid line
+
+
+                if figname == 'Figure 3 - Regional Vegetation':
+                    map.addLayer(bufferlay)
+                    buff1500 = map.listLayers(bufferlay)[0]
+                    zoomextent(figname, buff1500, 1.3)
+                    style1500(buff1500)
+                    map.addDataFromPath(arcpy.env.workspace+"/SVTMNSWExtantPCTvCMQuickview_clipped")
+                    veglay = map.listLayers('SVTMNSWExtantPCTvCMQuickview_clipped')[0]
+                    veglay.definitionQuery = "PCTID <> 0"
+
+
+                    #todo need symbology by unquie value in shades of green (avoid brown) etc.. might be a ramp we can use
+
+
+                if 'Bionet Atlas' in figname:
+                    map.addLayer(bufferlay)
+                    buff1500 = map.listLayers(bufferlay)[0]
+                    messages.addMessage(f'bioatlas layer {buff1500}')
+                    zoomextent(figname, buff1500, 1.3)
+
+                    style1500(buff1500)
+                    #arcpy.ImportToolbox(os.path.abspath(__file__), "aeptools")
+                    bio_tool=bioatlas()
+                    bio_params=bio_tool.getParameterInfo()
+                    bio_params[0].value="Within Existing Layer/Record"
+                    bio_params[1].value = buff1500
+                    bio_params[2].value = "Only threatened (state or federal)"
+                    bio_params[3].value = f'{arcpy.env.workspace}\\Bionet_Records_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+
+                    bio_tool.execute(bio_params,messages)
+
+                # todo legends for bdar maps (can we just use auto add new layers?) need to change legend to adjust columns and font size
+            """
+            ARB specific layer mods and additions
+            """
+            # if arb and figure 4 or 5, need to add the TPZ/SRZ buffers
+            # tpz style
+            # SRZ style
+            # create buffers
+            if figname == 'Figure 4 - Tree Assessment' or figname == 'Figure 5 - Tree Protection Plan':
+                if not bufferscreated:
+                    messages.addMessage('Creating TPZ and SRZ buffers')
+
+                    # need to add the tree assessment layer to the start/launch map so the buffers can be created - for some reason the launch map is still the active map even though other maps have been create
+                    if startmap is not None:
+                        startmap.addLayer(arbtalay)
+
+                    arcpy.analysis.Buffer(
+                        in_features=arbtalay,
+                        out_feature_class="TPZ_Buffer",
+                        buffer_distance_or_field="tpz",
+                        line_side="FULL",
+                        line_end_type="ROUND",
+                        dissolve_option="NONE",
+                        dissolve_field=None,
+                        method="GEODESIC"
+                    )
+                    arcpy.analysis.Buffer(
+                        in_features=arbtalay,
+                        out_feature_class="SRZ_Buffer",
+                        buffer_distance_or_field="SRZ",
+                        line_side="FULL",
+                        line_end_type="ROUND",
+                        dissolve_option="NONE",
+                        dissolve_field=None,
+                        method="GEODESIC"
+                    )
+                    bufferscreated = True
+
+                    if startmap is not None:
+                        startmap.removeLayer(startmap.listLayers(arbtalay)[0])
+
+                if 'Tree Protection Plan' in figname:
+
+                    # talay = map.listLayers("Tree Assessment - Retention Value")[0]
+                    wcls = "Remove_Retain IN ('Retain', 'Retain (Protection)')"
+
+                    # update definition query
+                    query = arbtalay.listDefinitionQueries()
+                    for dic in query:
+                        for key, value in dic.items():
+                            if key == 'sql':
+                                defquery = dic[key] + ' and ' + wcls
+                                dic[key] = defquery
+                    arbtalay.updateDefinitionQueries(query)
+                    # check the number of records to make sure some trees are being retained otherwise fig5 is blank (they may have forgotten to update this field
+                    result = arcpy.management.GetCount(arbtalay)
+                    count = int(result[0])
+                    if count == 0:
+                        messages.addWarningMessage(
+                            'Figure 5 will be blank as no trees are marked to be retained - see "remove_retain" field.')
+                    # messages.addMessage(talay.name)
+                    # messages.addMessage(defquery)
+
+                else:
+                    wcls = ""
+
+                buffer_results = arcpy.management.MakeFeatureLayer(
+                    in_features="TPZ_Buffer",
+                    out_layer="TPZ", where_clause=wcls)
+                bufferlay = buffer_results.getOutput(0)
+                map.addLayer(bufferlay)
+                tpzlyr = map.listLayers("TPZ")[0]
+                # tpzlyr.definitionQuery = wcls
+                sym = tpzlyr.symbology
+                sym.renderer.symbol.applySymbolFromGallery("TPZ")
+                tpzlyr.symbology = sym
+
+                buffer_results = arcpy.management.MakeFeatureLayer(
+                    in_features="SRZ_Buffer",
+                    out_layer="SRZ", where_clause=wcls)
+
+                bufferlay = buffer_results.getOutput(0)
+                map.addLayer(bufferlay)
+                srzlyr = map.listLayers("SRZ")[0]
+                # srzlyr.definitionQuery = wcls
+                sym = srzlyr.symbology
+                sym.renderer.symbol.applySymbolFromGallery(
+                    "SRZ")  # todo need to check that AEP styles is added to project
+                srzlyr.symbology = sym
+
+            # open the layout in view
+            lyt.openView()
+
+            # fix the legend for new layers
+            leg = lyt.listElements('LEGEND_ELEMENT')[0]
+
+            # find the study area legend item and set as reference item to move other items below it.
+            for itm in leg.items:
+                if itm.name == "Project Study Area" or itm.name == "Study Area":
+                    refitem = itm
+                    break
+
+            """
+            Arb legend items ----------------------------
+            """
+            if figname == 'Figure 4 - Tree Assessment' or figname == 'Figure 5 - Tree Protection Plan':
+                leg.addItem(tpzlyr, "TOP")
+                for itm in leg.items:
+                    if itm.name == "TPZ":
+                        itm.patchHeight = 9
+                        itm.patchWidth = 20
+                        tpzitem = itm
+                        break
+                leg.moveItem(refitem, tpzitem, "AFTER")
+                leg.addItem(srzlyr, "TOP")
+                for itm in leg.items:
+                    if itm.name == "SRZ":
+                        itm.patchHeight = 9
+                        itm.patchWidth = 20
+                        srzitem = itm
+                        break
+                leg.moveItem(refitem, srzitem, "AFTER")
+
+            # --------------------------------------------
+            # impact layer not shown in fig 1
+            if impactlayer and 'Figure 1' not in fig:
+                leg.addItem(implyr, "TOP")
+                for itm in leg.items:
+                    if itm.name == implyr.name:
+                        itm.patchHeight = 9
+                        itm.patchWidth = 20
+                        impitem = itm
+                        break
+                leg.moveItem(refitem, impitem, "AFTER")
+
+        # close all map views (don't really need them, except for the starting map) - may close other maps user had open
+        # project.closeViews ("MAPS")
+
+        # if startmap is not None:
+        #    startmap.openView()
+
+        # messages.addMessage(f'Output merged layer created at {finaloutfc}')
+        # messages.addMessage('Resume Google Drive Syncing')
+        # result = subprocess.run(["C:\Program Files\Google\Drive File Stream\launch.bat","--resume_syncing"], shell=True)
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+
+        # resume google drive syncing
+        # import subprocess
+        # messages.addMessage('Resume Google Drive Syncing.')
+        # result = subprocess.run(["C:\Program Files\Google\Drive File Stream\launch.bat","--resume_syncing"], shell=True)
+
+        return
+
+
+class Adddefqueries:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Add Definition Queries"
+        self.description = ""
+        self.category = "Data Management"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        # First parameter
+        param0 = arcpy.Parameter(
+            displayName="Enter Project Number",
+            name="in_project_number",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input")
+        params = [param0]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        projectnum = parameters[0].valueAsText
+        messages.addMessage(projectnum)
+
+        def process_layer(layer, queries):
+            """Apply definition query to individual feature layers."""
+            try:
+                if layer.isFeatureLayer:
+                    field_names = [field.name for field in arcpy.ListFields(layer)]
+                    applicable_queries = [query for field, query in queries.items() if field in field_names]
+
+                    if applicable_queries:
+                        combined_query = " OR ".join(applicable_queries)
+                        layer.definitionQuery = combined_query
+                        messages.addMessage(f"Applied query to layer: {layer.name}")
+                    else:
+                        messages.addMessage(f"Skipped {layer.name}: No relevant fields found")
+                elif layer.isGroupLayer:
+                    messages.addMessage(f"Processing group layer: {layer.name}")
+                    for sub_layer in layer.listLayers():
+                        process_layer(sub_layer, queries)
+                else:
+                    messages.addMessage(f"Skipped {layer.name}: Not a feature layer or group layer")
+            except Exception as e:
+                messages.addErrorMessage(f"Error processing layer {layer.name}: {e}")
+
+        project = arcpy.mp.ArcGISProject("CURRENT")
+        maps = project.listMaps()
+
+        # Define queries for the fields
+        queries = {
+            "project_number": f"project_number LIKE '%{projectnum}%'",
+            "project_number_other": f"project_number_other LIKE '%{projectnum}%'",
+            "project_wm": f"project_wm LIKE '%{projectnum}%'"
+        }
+
+        # Iterate through all maps and their layers
+        for map in maps:
+            messages.addMessage(f"Processing map: {map.name}")
+            for layer in map.listLayers():
+                process_layer(layer, queries)
+
+        messages.addMessage("Definition query process completed.")
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+
+class feature2GPX:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Export feature to GPX file"
+        self.description = ""
+        self.category = "GPS files"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        # First parameter
+        inlay0 = arcpy.Parameter(
+            displayName="Input Features",
+            name="in_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input")
+        outfeat1 = arcpy.Parameter(
+            displayName="Out GPX File",
+            name="out_features",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Output")
+
+        outfeat1.filter.list = ['gpx']
+
+        namefld2 = arcpy.Parameter(
+            displayName="GPX Name Field",
+            name="namefld2",
+            datatype="Field",
+            parameterType="Required",
+            direction="Input")
+
+        namefld2.parameterDependencies = [inlay0.name]
+
+        descriptionfld3 = arcpy.Parameter(
+            displayName="GPX Description Field",
+            name="descriptionfld3",
+            datatype="Field",
+            parameterType="Required",
+            direction="Input")
+
+        descriptionfld3.parameterDependencies = [inlay0.name]
+
+        params = [inlay0, outfeat1, namefld2, descriptionfld3]
+
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        inFeatures = parameters[0].valueAsText
+        outGPX = parameters[1].valueAsText
+        nameGPX = parameters[2].valueAsText
+        descGPX = parameters[3].valueAsText
+
+        messages.addMessage(f"{inFeatures} layer to be converted.")
+        messages.addMessage(f"{outGPX} is the out GPX file.")
+
+        desc = arcpy.Describe(inFeatures)
+        if desc.shapeType == "Polygon":
+            messages.addMessage(f"Polygon layer")
+            # arcpy.env.workspace = r'C:\GIS\data\testdata'  # I have my polygon shapefile in this folder
+
+            # polygon_fc = "ak_riks"
+            polygon_fields = [f for f in arcpy.ListFields(inFeatures) if f.type not in ['Geometry', 'OID','GlobalID','Guid']]
+
+            # Create a polyline feature class and add all fields from polygon fc
+            polyline_fc = "in_memory\\temp_line_layer_genfeat2gpx"
+            # arcpy.CreateFeatureclass_management(out_path=arcpy.env.workspace, out_name=polyline_fc,
+            #                                    geometry_type='POLYLINE',
+            #                                    spatial_reference=polygon_fc)
+            with arcpy.EnvManager(
+                    scratchWorkspace='memory',
+                    workspace="memory"):
+                arcpy.management.CreateFeatureclass(
+                    out_path="in_memory",
+                    out_name="temp_line_layer_genfeat2gpx",
+                    geometry_type="POLYLINE",
+                    template=inFeatures,
+                    has_m="DISABLED",
+                    has_z="DISABLED",
+                    spatial_reference='GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision',
+                    config_keyword="",
+                    spatial_grid_1=0,
+                    spatial_grid_2=0,
+                    spatial_grid_3=0,
+                    out_alias="",
+                    oid_type="SAME_AS_TEMPLATE"
+                )
+
+            for f in polygon_fields:
+                arcpy.AddField_management(in_table=polyline_fc, field_name=f.name, field_type=f.type,
+                                          field_precision=f.precision, field_scale=f.scale, field_length=f.length)
+
+            fieldlist = [f.name for f in polygon_fields] + ['SHAPE@']
+            icur = arcpy.da.InsertCursor(polyline_fc, fieldlist)  # To insert attributes and geometries
+
+            with arcpy.da.SearchCursor(inFeatures, fieldlist) as cursor:
+                for row in cursor:
+                    geom = row[-1].boundary()  #shape field
+                    newrow = list(row[:-1]) + [geom] #all other fields but shape
+                    icur.insertRow(newrow)
+            del icur, cursor, row
+
+            arcpy.conversion.FeaturesToGPX(
+                in_features="in_memory\\temp_line_layer_genfeat2gpx",
+                out_gpx_file=outGPX,
+                name_field=nameGPX,
+                description_field=descGPX,
+                z_field=None,
+                date_field=None
+            )
+
+
+        else:
+            # if its a point or line layer already
+            arcpy.conversion.FeaturesToGPX(
+                in_features=inFeatures,
+                out_gpx_file=outGPX,
+                name_field=nameGPX,
+                description_field=descGPX,
+                z_field=None,
+                date_field=None
+            )
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+class bioatlas_obs:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Bionet Atlas Tool"
+        self.description = ""
+        self.category = "Bionet Atlas"
+
+        arcpy.env.addOutputsToMap = True
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        from datetime import datetime
+        import os
+
+        queryextent = arcpy.Parameter(
+            displayName="Select Query Extent",
+            name="queryextent",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        queryextent.filter.type = "ValueList"
+        queryextent.filter.list = ['Screen', 'Within Existing Layer/Record']
+        queryextent.value = 'Within Existing Layer/Record'
+
+        cliplayer = arcpy.Parameter(
+            displayName="Select polygon layer (use selected record if required)",
+            name="cliplayer",
+            datatype="GPFeatureLayer",
+            parameterType="Optional",
+            direction="Input"
+        )
+        cliplayer.filter.list = ["Polygon"]
+
+        param_symbology = arcpy.Parameter(
+            displayName="Symbology Options",
+            name="symbology_option",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        param_symbology.filter.type = "ValueList"
+        param_symbology.filter.list = ['No symbology', 'Class and species', 'Class', 'Kingdom']
+        param_symbology.value = 'Class and species'
+
+        listedspecies = arcpy.Parameter(
+            displayName="Threatened species only",
+            name="listedspecies",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        listedspecies.filter.type = "ValueList"
+        listedspecies.filter.list = ['Only threatened (state or federal)', 'All records']
+        listedspecies.value = 'Only threatened (state or federal)'
+
+        out_features = arcpy.Parameter(
+            displayName="Output Bionet Records",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output"
+        )
+        out_features.value = f'{arcpy.env.workspace}\\Bionet_Records_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+
+        tenby10km = arcpy.Parameter(
+            displayName="Create 10km x 10km search area listing",
+            name="10by10km",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        searchdist = arcpy.Parameter(
+            displayName="Search distance",
+            name="searchdist",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input"
+        )
+        searchdist.filter.type = "ValueList"
+        searchdist.filter.list = ['10km x 10km (default)', '25km x 25km', '50km x 50km', '100km x 100km']
+        searchdist.value = '10km x 10km (default)'
+
+        textfile = arcpy.Parameter(
+            displayName="Output record csv file",
+            name="textfile",
+            datatype="DEFile",
+            parameterType="Optional",
+            direction="Output"
+        )
+        textfile.value = f'{os.path.dirname(arcpy.env.workspace)}\\Bionet_Records_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        textfile.filter.list = ['csv']
+
+        summarytextfile = arcpy.Parameter(
+            displayName="Output summary count csv file",
+            name="summarytextfile",
+            datatype="DEFile",
+            parameterType="Optional",
+            direction="Output"
+        )
+        summarytextfile.value = f'{os.path.dirname(arcpy.env.workspace)}\\Bionet_Records_Summary_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        summarytextfile.filter.list = ['csv']
+
+        addsearcharea = arcpy.Parameter(
+            displayName="Add search extent to map",
+            name="addsearcharea",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        # Parameter order (indexes used elsewhere):
+        # 0 queryextent, 1 cliplayer, 2 listedspecies, 3 param_symbology, 4 out_features,
+        # 5 tenby10km, 6 searchdist, 7 textfile, 8 summarytextfile, 9 addsearcharea
+        params = [queryextent, cliplayer, listedspecies, param_symbology, out_features,
+                  tenby10km, searchdist, textfile, summarytextfile, addsearcharea]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal validation."""
+
+        if parameters[0].value == 'Within Existing Layer/Record':
+            parameters[1].enabled = True
+        else:
+            parameters[1].enabled = False
+
+        # Toggle related options when 10x10 grid listing is used
+        if parameters[5].value:
+            parameters[6].enabled = True  # searchdist
+            parameters[7].enabled = True  # textfile
+            parameters[8].enabled = True  # summarytextfile
+            parameters[9].enabled = True  # addsearcharea
+        else:
+            parameters[6].enabled = False
+            parameters[7].enabled = False
+            parameters[8].enabled = False
+            parameters[9].enabled = False
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool parameter."""
+        arcpy.env.addOutputsToMap = True
+        if parameters[0].value == 'Within Existing Layer/Record' and parameters[1].value is None:
+            parameters[1].setErrorMessage("A layer is required")
+        return
+
+    def execute(self, parameters, messages):
+        import requests
+        import pandas as pd
+        import tempfile
+        from datetime import datetime
+        import time
+        from pathlib import Path
+        import os
+
+        # =========================
+        # HARD-CODED APP TOKEN (testing)
+        APP_TOKEN = "UIB62+XPjce2Ob+cbZjv33oOcw8DrjoVcdI0UgDgIvQ=:IyrWMNRgNeSKoAVXSUCQD9uLcv4/eNE11frm9ywpBDJKNbiJayYFNWrIrNsTdfkeasC5UzcMcfwCfK20jZ6lhm30iZxF5+km"
+        # =========================
+
+        # Create a requests session with required headers
+        s = requests.Session()
+        s.headers.update({
+            "access_token": APP_TOKEN,              # IMPORTANT: exact header name
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+
+        extent = parameters[0].valueAsText
+        if extent == 'Within Existing Layer/Record':
+            exfc = parameters[1].valueAsText
+
+        listedonlyspecies = parameters[2].valueAsText
+        symbology_option = parameters[3].valueAsText
+        out_fc = parameters[4].valueAsText
+        tenby10 = parameters[5].valueAsText
+        searchdist = parameters[6].valueAsText
+        recordfile = parameters[7].valueAsText
+        summaryfile = parameters[8].valueAsText
+        addsearcharea = parameters[9].valueAsText
+
+        import arcpy
+
+        temp_dir = tempfile.mkdtemp()
+        csvfile = temp_dir + '\\tempbionet_download_' + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
+
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+        mv = aprx.activeView
+
+        if searchdist == '10km x 10km (default)':
+            buffdist = 5000
+        elif searchdist == '25km x 25km':
+            buffdist = 12500
+        elif searchdist == '50km x 50km':
+            buffdist = 25000
+        elif searchdist == '100km x 100km':
+            buffdist = 50000
+
+        if extent == 'Screen':
+            if tenby10:
+                ext = mv.camera.getExtent()
+                centroid_point = arcpy.Point(
+                    X=(ext.XMin + ext.XMax) / 2,
+                    Y=(ext.YMin + ext.YMax) / 2
+                )
+                centroid = arcpy.PointGeometry(centroid_point, ext.spatialReference)
+                target_sr = arcpy.SpatialReference(3308)  # NSW Lambert (meters)
+                projected_centroid = centroid.projectAs(target_sr)
+                buffer_xkm = projected_centroid.buffer(buffdist)  # 5km to give 10 x 10km grid
+                gda94ext = buffer_xkm.projectAs(arcpy.SpatialReference(4283)).extent
+            else:
+                ext = mv.camera.getExtent()
+                gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+        if extent == 'Within Existing Layer/Record':
+            arcpy.management.MinimumBoundingGeometry(
+                exfc, 'memory//B10netT00l_ext_temp_feature',
+                geometry_type='ENVELOPE', group_option='ALL'
+            )
+            for row in arcpy.da.SearchCursor('memory//B10netT00l_ext_temp_feature', ['SHAPE@']):
+                ext = row[0].extent
+                gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+            if tenby10:
+                arcpy.analysis.PairwiseBuffer(
+                    in_features=exfc,
+                    out_feature_class='memory//B10netT00l_ext_temp_buffer_feature',
+                    buffer_distance_or_field=f"{buffdist} Meters",
+                    dissolve_option="NONE",
+                    dissolve_field=None,
+                    method="PLANAR",
+                    max_deviation="0 Meters"
+                )
+                arcpy.analysis.PairwiseDissolve(
+                    in_features='memory//B10netT00l_ext_temp_buffer_feature',
+                    out_feature_class='memory//B10netT00l_ext_temp_buffer_disfeature',
+                    dissolve_field=None,
+                    statistics_fields=None,
+                    multi_part="MULTI_PART",
+                    concatenation_separator=""
+                )
+                for row in arcpy.da.SearchCursor('memory//B10netT00l_ext_temp_buffer_disfeature', ['SHAPE@']):
+                    ext = row[0].extent
+                    gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+        NorthLat = gda94ext.YMax
+        EastLong = gda94ext.XMax
+        WestLong = gda94ext.XMin
+        SouthLat = gda94ext.YMin
+
+        polyarray = arcpy.Array([
+            arcpy.Point(WestLong, SouthLat),  # lower-left
+            arcpy.Point(WestLong, NorthLat),  # upper-left
+            arcpy.Point(EastLong, NorthLat),  # upper-right
+            arcpy.Point(EastLong, SouthLat),  # lower-right
+            arcpy.Point(WestLong, SouthLat)   # close the ring
+        ])
+
+        searchpoly = arcpy.Polygon(polyarray, arcpy.SpatialReference(4283))
+        searchfc = f'{out_fc}_searchArea'
+        arcpy.CopyFeatures_management([searchpoly], searchfc)
+
+        if addsearcharea:
+            searchlayer = mv.map.addDataFromPath(searchfc)
+            sym = searchlayer.symbology
+            if sym.renderer.type == 'SimpleRenderer':
+                sym.renderer.symbol.applySymbolFromGallery("Black Outline (1pt)")
+                symbol = sym.renderer.symbol
+                symbol.outlineColor = {'RGB':[139,69,19,100]}
+                symbol.outlineWidth = 1.5
+                symbol.color = {'RGB':[255,255,255,0]}
+                searchlayer.symbology = sym
+
+        fieldsreturn = '$select=catalogNumber,scientificNameID,scientificName,vernacularName,stateConservation,countryConservation,decimalLatitude,decimalLongitude,geodeticDatum,class,family,genus,kingdom,eventDate,sensitivityClass,status,coordinateUncertaintyInMeters,datasetName,locality,samplingEffort,estimateTypeCode,establishmentMeans,individualCount,observationType,recordedBy,TSProfileID,basisOfRecord'
+
+
+        if listedonlyspecies == 'Only threatened (state or federal)':
+            listedfilter = " and ((countryConservation ne 'Not Listed') or (stateConservation ne 'Not Listed'))"
+            lictext = ' - Threatened Species'
+        else:
+            listedfilter = ""
+            lictext = ' - All Records'
+
+        spatialextent = (
+            f"$filter=(status ne 'Invalid, in quarantine') and "
+            f"((decimalLongitude ge {WestLong}) and (decimalLongitude le {EastLong})) and "
+            f"((decimalLatitude lt {NorthLat}) and (decimalLatitude gt {SouthLat})){listedfilter}"
+        )
+        url = f"https://data.bionet.nsw.gov.au/biosvcapp/odata/SpeciesSightings_CoreData?{spatialextent}&{fieldsreturn}"
+
+        # --- Pagination with token auth ---
+        all_records = []
+        next_url = url
+        page_num = 1
+        groupname = f'BioNet Atlas Records {lictext}'
+
+        while next_url:
+            messages.addMessage(f"Downloading record set {page_num} ... please wait")
+            try:
+                resp = s.get(next_url, timeout=60)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(min(2 ** min(page_num, 5), 30))
+                    resp = s.get(next_url, timeout=60)
+
+                if not resp.ok:
+                    messages.addErrorMessage(
+                        f"Request failed at record set {page_num}: {resp.status_code} {resp.reason}")
+                    break
+
+                payload = resp.json()
+                records = payload.get('value', [])
+                all_records.extend(records)
+
+                next_url = payload.get('@odata.nextLink')
+                page_num += 1
+
+            except Exception as e:
+                messages.addErrorMessage(f"Exception during request: {e}")
+                break
+        # --- End pagination ---
+
+        if all_records:
+            df = pd.DataFrame(all_records)
+            messages.addMessage(f"Total records retrieved: {len(df)}")
+            df.to_csv(csvfile, encoding='utf-8', index=False)
+            if recordfile:
+                df.to_csv(recordfile, encoding='utf-8', index=False)
+            if summaryfile:
+                df_counts = (
+                    df.groupby(['scientificName','vernacularName','class','family','genus','kingdom',
+                                'stateConservation','countryConservation'])
+                      .size()
+                      .reset_index(name='count')
+                      .sort_values(by='count', ascending=False)
+                      .reset_index(drop=True)
+                      .rename(columns={'count':'Records'})
+                )
+                df_counts.to_csv(summaryfile, encoding='utf-8', index=False)
+        else:
+            messages.addWarningMessage("No records were retrieved.")
+            return
+
+        # ==== Create features from CSV (unchanged) ====
+        orig_out_fc = out_fc
+        out_fc = f"in_memory\\{os.path.basename(out_fc)}"  # in-memory processing
+
+        if os.path.isfile(csvfile):
+            arcpy.conversion.ExportTable(in_table=csvfile, out_table=out_fc + '_table')
+
+            input_fields = [f.name for f in arcpy.ListFields(out_fc + '_table') if f.type not in ("OID", "Geometry")]
+
+            arcpy.CreateFeatureclass_management(
+                out_path=os.path.dirname(out_fc),
+                out_name=os.path.basename(out_fc),
+                geometry_type="POINT",
+                spatial_reference='GEOGCS["GCS_GDA_1994",DATUM["D_GDA_1994",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+            )
+
+            for field in input_fields:
+                template_field = arcpy.ListFields(out_fc + '_table', field)[0]
+                arcpy.AddField_management(out_fc, field, template_field.type, template_field.precision,
+                                          template_field.scale, template_field.length)
+
+            insert_fields = ["SHAPE@"] + [f for f in input_fields]
+            count = 0
+            with arcpy.da.InsertCursor(out_fc, insert_fields) as icur:
+                with arcpy.da.SearchCursor(out_fc + '_table', input_fields) as scur:
+                    for row in scur:
+                        try:
+                            x = float(row[input_fields.index('decimalLongitude')])
+                            y = float(row[input_fields.index('decimalLatitude')])
+                            if not (x and y):
+                                messages.addWarningMessage(f"Skipping blank lat long records x{x} y{y}")
+                                continue
+                            point = arcpy.Point(x, y)
+                            geom = arcpy.PointGeometry(
+                                point,
+                                'GEOGCS["GCS_GDA_1994",DATUM["D_GDA_1994",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+                            )
+                            attr_vals = [row[input_fields.index(f)] for f in insert_fields[1:]]
+                            icur.insertRow([geom] + attr_vals)
+                            count += 1
+                        except Exception as e:
+                            messages.addWarningMessage(f"Skipped row due to error: {e}")
+            del icur, scur, row
+
+            arcpy.management.AlterField(
+                in_table=out_fc,
+                field="vernacularName",
+                new_field_name="commonName",
+                new_field_alias="Common Name"
+            )
+            arcpy.management.AlterField(
+                in_table=out_fc,
+                field="scientificName",
+                new_field_alias="Scientific Name"
+            )
+
+            layername = Path(out_fc).stem
+
+            # Save memory out_fc to original path
+            arcpy.conversion.FeatureClassToFeatureClass(
+                out_fc, os.path.dirname(orig_out_fc), os.path.basename(orig_out_fc)
+            )
+            out_fc = orig_out_fc
+
+            fl = arcpy.management.MakeFeatureLayer(out_fc, layername).getOutput(0)
+            mv.map.addLayer(fl)
+            l = mv.map.listLayers(layername)[0]
+
+            layer_name = l.name
+
+            if extent == 'Within Existing Layer/Record':
+                arcpy.management.SelectLayerByLocation(
+                    in_layer=layername,
+                    overlap_type="INTERSECT",
+                    select_features=exfc,
+                    search_distance=None,
+                    selection_type="NEW_SELECTION",
+                    invert_spatial_relationship="INVERT"
+                )
+                messages.addMessage('Within selected recorded/layer results')
+                result = int(arcpy.management.GetCount(layer_name)[0])
+                if result > 0:
+                    arcpy.management.DeleteRows(in_rows=layer_name)
+
+            if symbology_option == 'No symbology':
+                messages.addMessage("No symbology option was used - default esri point symbol used")
+            elif symbology_option == 'Class and species':
+                # Ensure commonName populated for display when missing
+                arcpy.management.SelectLayerByAttribute(
+                    in_layer_or_view=l,
+                    selection_type="NEW_SELECTION",
+                    where_clause="commonName IS NULL",
+                    invert_where_clause=None
+                )
+                result = int(arcpy.management.GetCount(l)[0])
+                if result > 0:
+                    arcpy.management.CalculateField(
+                        in_table=l,
+                        field="commonName",
+                        expression="!scientificName!",
+                        expression_type="PYTHON3",
+                        code_block="",
+                        field_type="TEXT",
+                        enforce_domains="NO_ENFORCE_DOMAINS"
+                    )
+
+                grouplay = mv.map.createGroupLayer(groupname)
+                # Map each class to the exact gallery symbol
+                class_symbol_specs = {
+                    'Amphibia': {'symbol': 'Diamond 3', 'size': 11, 'angle': 0},
+                    'Aves': {'symbol': 'Triangle 3', 'size': 9, 'angle': 0},
+                    'Flora': {'symbol': 'Star 3', 'size': 12, 'angle': 0},
+                    'Mammalia': {'symbol': 'Circle 3', 'size': 8, 'angle': 0},
+                    'Reptilia': {'symbol': 'Square 3', 'size': 9, 'angle': 0},
+                    'Insecta': {'symbol': 'Cross 3', 'size': 11, 'angle': 0},
+                    'Gastropoda': {'symbol': 'Hexagon 3', 'size': 9, 'angle': 0},
+                    'Other': {'symbol': 'Triangle 3', 'size': 9, 'angle': 90},  # 90° tweak for “Other”
+                }
+
+                # Process specific classes first, then “Other”
+                ordered_classes = [c for c in class_symbol_specs.keys() if c != 'Other'] + ['Other']
+
+                for spclass in ordered_classes:
+                    spec = class_symbol_specs[spclass]
+                    unique_name = f"{spclass}_{int(time.time())}"
+
+                    if spclass != 'Other':
+                        fl = arcpy.management.MakeFeatureLayer(
+                            out_fc, unique_name, where_clause=f"class='{spclass}'"
+                        ).getOutput(0)
+                    else:
+                        # “Other” = anything not in the explicit set above (excluding itself)
+                        non_other = [c for c in ordered_classes if c != 'Other']
+                        qrystring = "('" + "','".join(non_other) + "')"
+                        fl = arcpy.management.MakeFeatureLayer(
+                            out_fc, unique_name, where_clause=f"class NOT IN {qrystring}"
+                        ).getOutput(0)
+
+                    mv.map.addLayer(fl, "TOP")
+                    time.sleep(0.5)
+
+                    ll = mv.map.listLayers()[0]  # top
+                    if ll.name != unique_name:
+                        continue
+
+                    ll.name = spclass
+                    arcpy.management.SelectLayerByAttribute(
+                        in_layer_or_view=ll.name,
+                        selection_type="NEW_SELECTION",
+                        where_clause="",
+                        invert_where_clause=None
+                    )
+
+                    cnt = int(arcpy.management.GetCount(ll.name)[0])
+                    messages.addMessage(f'    {spclass} record count {cnt}')
+
+                    if cnt == 0:
+                        # nothing to symbolize, tidy up
+                        mv.map.removeLayer(ll)
+                        continue
+
+                    # Move into group & get a stable handle
+                    mv.map.addLayerToGroup(grouplay, ll, 'TOP')
+                    mv.map.removeLayer(ll)
+                    nl = mv.map.listLayers(spclass)[0]
+
+                    # Prepare symbology
+                    sym = nl.symbology
+                    # Grab a candidate from the symbol gallery by name
+                    gallery_hits = sym.renderer.symbol.listSymbolsFromGallery(spec['symbol'])
+                    # Fallback: if named symbol not found, take the first gallery option
+                    chosen = None
+                    for s in gallery_hits:
+                        if getattr(s, "name", "").strip().lower() == spec['symbol'].strip().lower():
+                            chosen = s
+                            break
+                    if chosen is None and gallery_hits:
+                        chosen = gallery_hits[0]
+                    if chosen is None:
+                        messages.addWarningMessage(
+                            f"    Warning: Could not find gallery symbol '{spec['symbol']}' for {spclass}. Using renderer defaults.")
+
+                    # Unique value renderer by label field (Flora → scientificName; others → commonName)
+                    sym.updateRenderer('UniqueValueRenderer')
+                    if spclass == 'Flora':
+                        sym.renderer.fields = ['scientificName']
+                        labeltype = 'Scientific Name'
+                    else:
+                        sym.renderer.fields = ['commonName']
+                        labeltype = 'Common Name'
+                    nl.symbology = sym
+
+                    # Apply symbol to each item in the UVR
+                    sym = nl.symbology
+                    if sym.renderer.groups:
+                        sym.renderer.groups[0].heading = f"{spclass} {labeltype}"
+                        for grp in sym.renderer.groups:
+                            for itm in grp.items:
+                                if chosen:
+                                    itm.symbol = chosen
+                                # Per-class size/angle, with existing special-cases preserved
+                                itm.symbol.size = spec.get('size', 6)
+                                itm.symbol.angle = spec.get('angle', 0)
+                                # Keep your outline width tweak
+                                itm.symbol.outlineWidth = 0.3
+                                # If you want Insecta star slightly bigger, spec already sets 8 above
+                            nl.symbology = sym  # apply after each group edit
+
+                    # Optional color ramp (kept from your original)
+                    sym = nl.symbology
+                    sym.renderer.colorRamp = aprx.listColorRamps("Basic Random")[0]
+                    nl.symbology = sym
+
+
+                l.visible = False  # hide the full layer
+            if symbology_option == "Class":
+                field_to_symbolize = "class"
+            elif symbology_option == "Kingdom":
+                field_to_symbolize = "kingdom"
+            else:
+                field_to_symbolize = None
+
+            if field_to_symbolize:
+                messages.addMessage(f"Field to sym {field_to_symbolize} in layer {layer_name}")
+                sym = l.symbology
+                sym.updateRenderer('UniqueValueRenderer')
+                sym.renderer.fields = [field_to_symbolize]
+                sym.renderer.colorRamp = aprx.listColorRamps("Basic Random")[0]
+                sym.renderer.allowNull = True
+                sym.renderer.showOtherValues = True
+                l.symbology = sym
+
+        else:
+            messages.addWarningMessage(f'CSV file could not be located {csvfile}')
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and added to the display."""
+        return
+
+class bioatlas:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Bionet Atlas Tool"
+        self.description = ""
+        self.category = "Bionet Atlas"
+
+        arcpy.env.addOutputsToMap = True
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        from datetime import datetime
+        import os
+
+        queryextent = arcpy.Parameter(
+            displayName="Select Query Extent",
+            name="queryextent",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        queryextent.filter.type = "ValueList"
+        queryextent.filter.list = ['Screen', 'Within Existing Layer/Record']
+        queryextent.value = 'Within Existing Layer/Record'
+
+        cliplayer = arcpy.Parameter(
+            displayName="Select polygon layer (use selected record if required)",
+            name="cliplayer",
+            datatype="GPFeatureLayer",
+            parameterType="Optional",
+            direction="Input"
+        )
+        cliplayer.filter.list = ["Polygon"]
+
+        param_symbology = arcpy.Parameter(
+            displayName="Symbology Options",
+            name="symbology_option",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        param_symbology.filter.type = "ValueList"
+        param_symbology.filter.list = ['No symbology', 'Class and species', 'Class', 'Kingdom']
+        param_symbology.value = 'Class and species'
+
+        listedspecies = arcpy.Parameter(
+            displayName="Threatened species only",
+            name="listedspecies",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"
+        )
+        listedspecies.filter.type = "ValueList"
+        listedspecies.filter.list = ['Only threatened (state or federal)', 'All records']
+        listedspecies.value = 'Only threatened (state or federal)'
+
+        out_features = arcpy.Parameter(
+            displayName="Output Bionet Records",
+            name="out_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Output"
+        )
+        out_features.value = f'{arcpy.env.workspace}\\Bionet_Records_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+
+        tenby10km = arcpy.Parameter(
+            displayName="Create 10km x 10km search area listing",
+            name="10by10km",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        searchdist = arcpy.Parameter(
+            displayName="Search distance",
+            name="searchdist",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input"
+        )
+        searchdist.filter.type = "ValueList"
+        searchdist.filter.list = ['10km x 10km (default)', '25km x 25km', '50km x 50km', '100km x 100km']
+        searchdist.value = '10km x 10km (default)'
+
+        textfile = arcpy.Parameter(
+            displayName="Output record csv file",
+            name="textfile",
+            datatype="DEFile",
+            parameterType="Optional",
+            direction="Output"
+        )
+        textfile.value = f'{os.path.dirname(arcpy.env.workspace)}\\Bionet_Records_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        textfile.filter.list = ['csv']
+
+        summarytextfile = arcpy.Parameter(
+            displayName="Output summary count csv file",
+            name="summarytextfile",
+            datatype="DEFile",
+            parameterType="Optional",
+            direction="Output"
+        )
+        summarytextfile.value = f'{os.path.dirname(arcpy.env.workspace)}\\Bionet_Records_Summary_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        summarytextfile.filter.list = ['csv']
+
+        addsearcharea = arcpy.Parameter(
+            displayName="Add search extent to map",
+            name="addsearcharea",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        # Parameter order (indexes used elsewhere):
+        # 0 queryextent, 1 cliplayer, 2 listedspecies, 3 param_symbology, 4 out_features,
+        # 5 tenby10km, 6 searchdist, 7 textfile, 8 summarytextfile, 9 addsearcharea
+        params = [queryextent, cliplayer, listedspecies, param_symbology, out_features,
+                  tenby10km, searchdist, textfile, summarytextfile, addsearcharea]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal validation."""
+
+        if parameters[0].value == 'Within Existing Layer/Record':
+            parameters[1].enabled = True
+        else:
+            parameters[1].enabled = False
+
+        # Toggle related options when 10x10 grid listing is used
+        if parameters[5].value:
+            parameters[6].enabled = True  # searchdist
+            parameters[7].enabled = True  # textfile
+            parameters[8].enabled = True  # summarytextfile
+            parameters[9].enabled = True  # addsearcharea
+        else:
+            parameters[6].enabled = False
+            parameters[7].enabled = False
+            parameters[8].enabled = False
+            parameters[9].enabled = False
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool parameter."""
+        arcpy.env.addOutputsToMap = True
+        if parameters[0].value == 'Within Existing Layer/Record' and parameters[1].value is None:
+            parameters[1].setErrorMessage("A layer is required")
+        return
+
+    def execute(self, parameters, messages):
+        import requests
+        import pandas as pd
+        import tempfile
+        from datetime import datetime
+        import time
+        from pathlib import Path
+        import os
+
+        # =========================
+        # HARD-CODED APP TOKEN (testing)
+        APP_TOKEN = "UIB62+XPjce2Ob+cbZjv33oOcw8DrjoVcdI0UgDgIvQ=:IyrWMNRgNeSKoAVXSUCQD9uLcv4/eNE11frm9ywpBDJKNbiJayYFNWrIrNsTdfkeasC5UzcMcfwCfK20jZ6lhm30iZxF5+km"
+        # =========================
+
+        # Create a requests session with required headers
+        s = requests.Session()
+        s.headers.update({
+            "access_token": APP_TOKEN,              # IMPORTANT: exact header name
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+
+        extent = parameters[0].valueAsText
+        if extent == 'Within Existing Layer/Record':
+            exfc = parameters[1].valueAsText
+
+        listedonlyspecies = parameters[2].valueAsText
+        symbology_option = parameters[3].valueAsText
+        out_fc = parameters[4].valueAsText
+        tenby10 = parameters[5].valueAsText
+        searchdist = parameters[6].valueAsText
+        recordfile = parameters[7].valueAsText
+        summaryfile = parameters[8].valueAsText
+        addsearcharea = parameters[9].valueAsText
+
+        import arcpy
+
+        temp_dir = tempfile.mkdtemp()
+        csvfile = temp_dir + '\\tempbionet_download_' + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
+
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+        mv = aprx.activeView
+
+        if searchdist == '10km x 10km (default)':
+            buffdist = 5000
+        elif searchdist == '25km x 25km':
+            buffdist = 12500
+        elif searchdist == '50km x 50km':
+            buffdist = 25000
+        elif searchdist == '100km x 100km':
+            buffdist = 50000
+
+        if extent == 'Screen':
+            if tenby10:
+                ext = mv.camera.getExtent()
+                centroid_point = arcpy.Point(
+                    X=(ext.XMin + ext.XMax) / 2,
+                    Y=(ext.YMin + ext.YMax) / 2
+                )
+                centroid = arcpy.PointGeometry(centroid_point, ext.spatialReference)
+                target_sr = arcpy.SpatialReference(3308)  # NSW Lambert (meters)
+                projected_centroid = centroid.projectAs(target_sr)
+                buffer_xkm = projected_centroid.buffer(buffdist)  # 5km to give 10 x 10km grid
+                gda94ext = buffer_xkm.projectAs(arcpy.SpatialReference(4283)).extent
+            else:
+                ext = mv.camera.getExtent()
+                gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+        if extent == 'Within Existing Layer/Record':
+            arcpy.management.MinimumBoundingGeometry(
+                exfc, 'memory//B10netT00l_ext_temp_feature',
+                geometry_type='ENVELOPE', group_option='ALL'
+            )
+            for row in arcpy.da.SearchCursor('memory//B10netT00l_ext_temp_feature', ['SHAPE@']):
+                ext = row[0].extent
+                gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+            if tenby10:
+                arcpy.analysis.PairwiseBuffer(
+                    in_features=exfc,
+                    out_feature_class='memory//B10netT00l_ext_temp_buffer_feature',
+                    buffer_distance_or_field=f"{buffdist} Meters",
+                    dissolve_option="NONE",
+                    dissolve_field=None,
+                    method="PLANAR",
+                    max_deviation="0 Meters"
+                )
+                arcpy.analysis.PairwiseDissolve(
+                    in_features='memory//B10netT00l_ext_temp_buffer_feature',
+                    out_feature_class='memory//B10netT00l_ext_temp_buffer_disfeature',
+                    dissolve_field=None,
+                    statistics_fields=None,
+                    multi_part="MULTI_PART",
+                    concatenation_separator=""
+                )
+                for row in arcpy.da.SearchCursor('memory//B10netT00l_ext_temp_buffer_disfeature', ['SHAPE@']):
+                    ext = row[0].extent
+                    gda94ext = ext.projectAs(arcpy.SpatialReference(4283))
+
+        NorthLat = gda94ext.YMax
+        EastLong = gda94ext.XMax
+        WestLong = gda94ext.XMin
+        SouthLat = gda94ext.YMin
+
+        polyarray = arcpy.Array([
+            arcpy.Point(WestLong, SouthLat),  # lower-left
+            arcpy.Point(WestLong, NorthLat),  # upper-left
+            arcpy.Point(EastLong, NorthLat),  # upper-right
+            arcpy.Point(EastLong, SouthLat),  # lower-right
+            arcpy.Point(WestLong, SouthLat)   # close the ring
+        ])
+
+        searchpoly = arcpy.Polygon(polyarray, arcpy.SpatialReference(4283))
+        searchfc = f'{out_fc}_searchArea'
+        arcpy.CopyFeatures_management([searchpoly], searchfc)
+
+        if addsearcharea:
+            searchlayer = mv.map.addDataFromPath(searchfc)
+            sym = searchlayer.symbology
+            if sym.renderer.type == 'SimpleRenderer':
+                sym.renderer.symbol.applySymbolFromGallery("Black Outline (1pt)")
+                symbol = sym.renderer.symbol
+                symbol.outlineColor = {'RGB':[139,69,19,100]}
+                symbol.outlineWidth = 1.5
+                symbol.color = {'RGB':[255,255,255,0]}
+                searchlayer.symbology = sym
+
+
+        fieldsreturn = '$select=catalogNumber,scientificNameID,scientificName,vernacularName,stateConservation,countryConservation,decimalLatitude,decimalLongitude,geodeticDatum,class,family,genus,kingdom,eventDate,sensitivityClass,status,coordinateUncertaintyInMeters,datasetName,locality,samplingEffort,estimateTypeCode,establishmentMeans,individualCount,observationType,recordedBy,TSProfileID,basisOfRecord'
+
+        if listedonlyspecies == 'Only threatened (state or federal)':
+            listedfilter = " and ((countryConservation ne 'Not Listed') or (stateConservation ne 'Not Listed'))"
+            lictext = ' - Threatened Species'
+        else:
+            listedfilter = ""
+            lictext = ' - All Records'
+
+        spatialextent = (
+            f"$filter=(status ne 'Invalid, in quarantine') and "
+            f"((decimalLongitude ge {WestLong}) and (decimalLongitude le {EastLong})) and "
+            f"((decimalLatitude lt {NorthLat}) and (decimalLatitude gt {SouthLat})){listedfilter}"
+        )
+        url = f"https://data.bionet.nsw.gov.au/biosvcapp/odata/SpeciesSightings_CoreData?{spatialextent}&{fieldsreturn}"
+
+        # --- Pagination with token auth ---
+        all_records = []
+        next_url = url
+        page_num = 1
+        groupname = f'BioNet Atlas Records {lictext}'
+
+        while next_url:
+            messages.addMessage(f"Downloading record set {page_num} ... please wait")
+            try:
+                resp = s.get(next_url, timeout=60)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(min(2 ** min(page_num, 5), 30))
+                    resp = s.get(next_url, timeout=60)
+
+                if not resp.ok:
+                    messages.addErrorMessage(
+                        f"Request failed at record set {page_num}: {resp.status_code} {resp.reason}")
+                    break
+
+                payload = resp.json()
+                records = payload.get('value', [])
+                all_records.extend(records)
+
+                next_url = payload.get('@odata.nextLink')
+                page_num += 1
+
+            except Exception as e:
+                messages.addErrorMessage(f"Exception during request: {e}")
+                break
+        # --- End pagination ---
+
+        if all_records:
+            df = pd.DataFrame(all_records)
+            messages.addMessage(f"Total records retrieved: {len(df)}")
+            df.to_csv(csvfile, encoding='utf-8', index=False)
+            if recordfile:
+                df.to_csv(recordfile, encoding='utf-8', index=False)
+            if summaryfile:
+                df_counts = (
+                    df.groupby(['scientificName','vernacularName','class','family','genus','kingdom',
+                                'stateConservation','countryConservation'])
+                      .size()
+                      .reset_index(name='count')
+                      .sort_values(by='count', ascending=False)
+                      .reset_index(drop=True)
+                      .rename(columns={'count':'Records'})
+                )
+                df_counts.to_csv(summaryfile, encoding='utf-8', index=False)
+        else:
+            messages.addWarningMessage("No records were retrieved.")
+            return
+
+        # ==== Create features from CSV (unchanged) ====
+        orig_out_fc = out_fc
+        out_fc = f"in_memory\\{os.path.basename(out_fc)}"  # in-memory processing
+
+        if os.path.isfile(csvfile):
+            arcpy.conversion.ExportTable(in_table=csvfile, out_table=out_fc + '_table')
+
+            input_fields = [f.name for f in arcpy.ListFields(out_fc + '_table') if f.type not in ("OID", "Geometry")]
+
+            arcpy.CreateFeatureclass_management(
+                out_path=os.path.dirname(out_fc),
+                out_name=os.path.basename(out_fc),
+                geometry_type="POINT",
+                spatial_reference='GEOGCS["GCS_GDA_1994",DATUM["D_GDA_1994",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+            )
+
+            for field in input_fields:
+                template_field = arcpy.ListFields(out_fc + '_table', field)[0]
+                arcpy.AddField_management(out_fc, field, template_field.type, template_field.precision,
+                                          template_field.scale, template_field.length)
+
+            insert_fields = ["SHAPE@"] + [f for f in input_fields]
+            count = 0
+            with arcpy.da.InsertCursor(out_fc, insert_fields) as icur:
+                with arcpy.da.SearchCursor(out_fc + '_table', input_fields) as scur:
+                    for row in scur:
+                        try:
+                            x = float(row[input_fields.index('decimalLongitude')])
+                            y = float(row[input_fields.index('decimalLatitude')])
+                            if not (x and y):
+                                messages.addWarningMessage(f"Skipping blank lat long records x{x} y{y}")
+                                continue
+                            point = arcpy.Point(x, y)
+                            geom = arcpy.PointGeometry(
+                                point,
+                                'GEOGCS["GCS_GDA_1994",DATUM["D_GDA_1994",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+                            )
+                            attr_vals = [row[input_fields.index(f)] for f in insert_fields[1:]]
+                            icur.insertRow([geom] + attr_vals)
+                            count += 1
+                        except Exception as e:
+                            messages.addWarningMessage(f"Skipped row due to error: {e}")
+            del icur, scur, row
+
+            arcpy.management.AlterField(
+                in_table=out_fc,
+                field="vernacularName",
+                new_field_name="commonName",
+                new_field_alias="Common Name"
+            )
+            arcpy.management.AlterField(
+                in_table=out_fc,
+                field="scientificName",
+                new_field_alias="Scientific Name"
+            )
+
+            layername = Path(out_fc).stem
+
+            # Save memory out_fc to original path
+            arcpy.conversion.FeatureClassToFeatureClass(
+                out_fc, os.path.dirname(orig_out_fc), os.path.basename(orig_out_fc)
+            )
+            out_fc = orig_out_fc
+
+            fl = arcpy.management.MakeFeatureLayer(out_fc, layername).getOutput(0)
+            mv.map.addLayer(fl)
+            l = mv.map.listLayers(layername)[0]
+
+            layer_name = l.name
+
+            if extent == 'Within Existing Layer/Record':
+                arcpy.management.SelectLayerByLocation(
+                    in_layer=layername,
+                    overlap_type="INTERSECT",
+                    select_features=exfc,
+                    search_distance=None,
+                    selection_type="NEW_SELECTION",
+                    invert_spatial_relationship="INVERT"
+                )
+                messages.addMessage('Within selected recorded/layer results')
+                result = int(arcpy.management.GetCount(layer_name)[0])
+                if result > 0:
+                    arcpy.management.DeleteRows(in_rows=layer_name)
+
+            if symbology_option == 'No symbology':
+                messages.addMessage("No symbology option was used - default esri point symbol used")
+            elif symbology_option == 'Class and species':
+                # Ensure commonName populated for display when missing
+                arcpy.management.SelectLayerByAttribute(
+                    in_layer_or_view=l,
+                    selection_type="NEW_SELECTION",
+                    where_clause="commonName IS NULL",
+                    invert_where_clause=None
+                )
+                result = int(arcpy.management.GetCount(l)[0])
+                if result > 0:
+                    arcpy.management.CalculateField(
+                        in_table=l,
+                        field="commonName",
+                        expression="!scientificName!",
+                        expression_type="PYTHON3",
+                        code_block="",
+                        field_type="TEXT",
+                        enforce_domains="NO_ENFORCE_DOMAINS"
+                    )
+
+                grouplay = mv.map.createGroupLayer(groupname)
+                # Map each class to the exact gallery symbol
+                class_symbol_specs = {
+                    'Amphibia': {'symbol': 'Diamond 3', 'size': 11, 'angle': 0},
+                    'Aves': {'symbol': 'Triangle 3', 'size': 9, 'angle': 0},
+                    'Flora': {'symbol': 'Star 3', 'size': 12, 'angle': 0},
+                    'Mammalia': {'symbol': 'Circle 3', 'size': 8, 'angle': 0},
+                    'Reptilia': {'symbol': 'Square 3', 'size': 9, 'angle': 0},
+                    'Insecta': {'symbol': 'Cross 3', 'size': 11, 'angle': 0},
+                    'Gastropoda': {'symbol': 'Hexagon 3', 'size': 9, 'angle': 0},
+                    'Other': {'symbol': 'Triangle 3', 'size': 9, 'angle': 90},  # 90° tweak for “Other”
+                }
+
+                # Process specific classes first, then “Other”
+                ordered_classes = [c for c in class_symbol_specs.keys() if c != 'Other'] + ['Other']
+
+                for spclass in ordered_classes:
+                    spec = class_symbol_specs[spclass]
+                    unique_name = f"{spclass}_{int(time.time())}"
+
+                    if spclass != 'Other':
+                        fl = arcpy.management.MakeFeatureLayer(
+                            out_fc, unique_name, where_clause=f"class='{spclass}'"
+                        ).getOutput(0)
+                    else:
+                        # “Other” = anything not in the explicit set above (excluding itself)
+                        non_other = [c for c in ordered_classes if c != 'Other']
+                        qrystring = "('" + "','".join(non_other) + "')"
+                        fl = arcpy.management.MakeFeatureLayer(
+                            out_fc, unique_name, where_clause=f"class NOT IN {qrystring}"
+                        ).getOutput(0)
+
+                    mv.map.addLayer(fl, "TOP")
+                    time.sleep(0.5)
+
+                    ll = mv.map.listLayers()[0]  # top
+                    if ll.name != unique_name:
+                        continue
+
+                    ll.name = spclass
+                    #time.sleep(0.5)
+                    #ll = mv.map.listLayers()[0]  # top
+                    arcpy.management.SelectLayerByAttribute(
+                        in_layer_or_view=ll,
+                        selection_type="NEW_SELECTION",
+                        where_clause="",
+                        invert_where_clause=None
+                    )
+
+                    cnt = int(arcpy.management.GetCount(ll)[0])
+                    messages.addMessage(f'    {spclass} record count {cnt}')
+
+                    if cnt == 0:
+                        # nothing to symbolize, tidy up
+                        mv.map.removeLayer(ll)
+                        continue
+
+                    # Move into group & get a stable handle
+                    mv.map.addLayerToGroup(grouplay, ll, 'TOP')
+                    mv.map.removeLayer(ll)
+                    nl = mv.map.listLayers(spclass)[0]
+
+                    # Prepare symbology
+                    sym = nl.symbology
+                    # Grab a candidate from the symbol gallery by name
+                    gallery_hits = sym.renderer.symbol.listSymbolsFromGallery(spec['symbol'])
+                    # Fallback: if named symbol not found, take the first gallery option
+                    chosen = None
+                    for s in gallery_hits:
+                        if getattr(s, "name", "").strip().lower() == spec['symbol'].strip().lower():
+                            chosen = s
+                            break
+                    if chosen is None and gallery_hits:
+                        chosen = gallery_hits[0]
+                    if chosen is None:
+                        messages.addWarningMessage(
+                            f"    Warning: Could not find gallery symbol '{spec['symbol']}' for {spclass}. Using renderer defaults.")
+
+                    # Unique value renderer by label field (Flora → scientificName; others → commonName)
+                    sym.updateRenderer('UniqueValueRenderer')
+                    if spclass == 'Flora':
+                        sym.renderer.fields = ['scientificName']
+                        labeltype = 'Scientific Name'
+                    else:
+                        sym.renderer.fields = ['commonName']
+                        labeltype = 'Common Name'
+                    nl.symbology = sym
+
+                    # Apply symbol to each item in the UVR
+                    sym = nl.symbology
+                    if sym.renderer.groups:
+                        sym.renderer.groups[0].heading = f"{spclass} {labeltype}"
+                        for grp in sym.renderer.groups:
+                            for itm in grp.items:
+                                if chosen:
+                                    itm.symbol = chosen
+                                # Per-class size/angle, with existing special-cases preserved
+                                itm.symbol.size = spec.get('size', 6)
+                                itm.symbol.angle = spec.get('angle', 0)
+                                # Keep your outline width tweak
+                                itm.symbol.outlineWidth = 0.3
+                                # If you want Insecta star slightly bigger, spec already sets 8 above
+                            nl.symbology = sym  # apply after each group edit
+
+                    # Optional color ramp (kept from your original)
+                    sym = nl.symbology
+                    sym.renderer.colorRamp = aprx.listColorRamps("Basic Random")[0]
+                    nl.symbology = sym
+
+
+                l.visible = False  # hide the full layer
+            if symbology_option == "Class":
+                field_to_symbolize = "class"
+            elif symbology_option == "Kingdom":
+                field_to_symbolize = "kingdom"
+            else:
+                field_to_symbolize = None
+
+            if field_to_symbolize:
+                messages.addMessage(f"Field to sym {field_to_symbolize} in layer {layer_name}")
+                sym = l.symbology
+                sym.updateRenderer('UniqueValueRenderer')
+                sym.renderer.fields = [field_to_symbolize]
+                sym.renderer.colorRamp = aprx.listColorRamps("Basic Random")[0]
+                sym.renderer.allowNull = True
+                sym.renderer.showOtherValues = True
+                l.symbology = sym
+
+        else:
+            messages.addWarningMessage(f'CSV file could not be located {csvfile}')
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and added to the display."""
+        return
+
+class batchclip:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Batch Clip Layers"
+        self.description = ""
+        self.category = "Data Management"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+
+        param0 = arcpy.Parameter(
+            displayName="Layers to clip",
+            name="in_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True)
+
+        param1 = arcpy.Parameter(
+            displayName="Clipping Layer",
+            name="clip_layer",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input")
+
+        param2 = arcpy.Parameter(
+            displayName="Output Geodatabase",
+            name="in_workspace",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input")
+
+        param3 = arcpy.Parameter(
+            displayName="Projection (GDA2020)",
+            name="outproj",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input")
+
+        param3.filter.type = "ValueList"
+        param3.filter.list = ['As per environment setting', 'Zone 56', 'Zone 55', 'Zone 54',
+                              'GDA2020 (geographic - long/lats)']
+        param3.value = 'Zone 56'
+
+        params = [param0, param1, param2, param3]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        # import arcpy
+        arcpy.env.overwriteOutput = True
+        """
+        This script will clip from a list of layers using another fc as the clipping shape (common area inside the shape to be retained) 
+        """
+        layerlist = parameters[0].valueAsText.replace("'", "").split(';')
+        clipfc = parameters[1].valueAsText
+        outworkspace = parameters[2].valueAsText
+        outproj = parameters[3].valueAsText
+
+        # messages.addMessage(layerlist)
+
+        import re  # remove non alphabet chars from name
+        if outproj == 'Zone 56':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_56",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",153.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'Zone 55':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_55",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",147.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'Zone 54':
+            outprojstr = r'PROJCS["GDA2020_MGA_Zone_54",GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",10000000.0],PARAMETER["Central_Meridian",141.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]];-5120900 1900 10000;-100000 10000;-100000 10000;0.001;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        if outproj == 'As per environment setting':
+            outprojstr = arcpy.env.outputCoordinateSystem
+            outtrans = arcpy.env.geographicTransformations
+        if outproj == 'GDA2020 (geographic - long/lats)':
+            outprojstr = r'GEOGCS["GDA2020",DATUM["GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]];-400 -400 1000000000;-100000 10000;-100000 10000;8.98315284119521E-09;0.001;0.001;IsHighPrecision'
+            outtrans = ''
+        for x in layerlist:
+            regex = re.compile('[^a-zA-Z]')
+            # First parameter is the replacement, second parameter is your input string
+            x2 = regex.sub('', x)
+
+            with arcpy.EnvManager(outputCoordinateSystem=outprojstr, geographicTransformations=outtrans):
+                arcpy.analysis.PairwiseClip(
+                    in_features=x,
+                    clip_features=clipfc,
+                    out_feature_class=f"{outworkspace}/" + x2 + "_clipped",
+                    cluster_tolerance=None
+                )
+            messages.addMessage("Layer clipped: " + x)
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+
+class cleanshpfiles:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Clean Shapefile filenames"
+        self.description = "Removes all special characters from the file names of shapefiles."
+        self.category = "Data Management"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Shapefile folder (NOTE - All shapefiles will have special characters removed)",
+            name="in_path",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input")
+
+        params = [param0]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        import os
+        import re
+
+        # Define the folder containing the Shapefiles
+        # shapefile_folder = r"C:\path\to\your\shapefiles"  # Change this to your actual folder path
+        shapefile_folder = parameters[0].valueAsText
+
+        # Define a regex pattern to remove invalid characters (excluding underscore "_")
+        invalid_chars_pattern = re.compile(r'[^a-zA-Z0-9_]')  # Removes all except letters, numbers, and underscores
+
+        # List of shapefile extensions to rename together
+        shapefile_extensions = [".shp", ".dbf", ".shx", ".prj", ".cpg", ".sbn", ".sbx", ".xml"]
+
+        # Get all .shp files in the folder
+        shapefiles = [f for f in os.listdir(shapefile_folder) if f.endswith(".shp")]
+
+        if len(shapefiles) == 0:
+            messages.addMessage(f"No shapefiles were found at {shapefile_folder}")
+        else:
+            # Loop through each Shapefile
+            for shp in shapefiles:
+                old_name = os.path.splitext(shp)[0]  # Get the filename without extension
+
+                # Replace hyphens with underscores
+                new_name = old_name.replace("-", "_")
+
+                # Remove invalid characters
+                new_name = invalid_chars_pattern.sub("_", new_name)
+
+                # If the name starts with a number, prepend an underscore "_"
+                if new_name[0].isdigit():
+                    new_name = "_" + new_name
+
+                # Ensure no double underscores (e.g., "__" → "_")
+                new_name = re.sub(r'__+', '_', new_name)
+
+                # If name changes, rename all associated files
+                if old_name != new_name:
+                    messages.addMessage(f"Renaming: {old_name} -> {new_name}")
+
+                    for ext in shapefile_extensions:
+                        old_file = os.path.join(shapefile_folder, old_name + ext)
+                        new_file = os.path.join(shapefile_folder, new_name + ext)
+
+                        if os.path.exists(old_file):  # Only rename if the file exists
+                            os.rename(old_file, new_file)
+                            print(f"Renamed: {old_file} -> {new_file}")
+
+            messages.addMessage("✅ Shapefile names cleaned successfully!")
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+
+class gdb2shp:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Batch export to Shapefile"
+        self.description = ""
+        self.category = "Data Management"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Geodatabase to export to Shapefile",
+            name="in_path",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input")
+
+        param1 = arcpy.Parameter(
+            displayName="Output shapefile folder",
+            name="out_path",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input")
+
+        params = [param0, param1]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        import arcpy
+        import os
+
+        # Set input geodatabase
+        # input_gdb = r"C:\Path\To\Your\Geodatabase.gdb"
+        input_gdb = parameters[0].valueAsText
+        # Set output folder for Shapefiles
+        # output_folder = r"C:\Path\To\Output\Folder"
+        output_folder = parameters[1].valueAsText
+
+        # Ensure the output folder exists
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        # Set the workspace to the input geodatabase
+        arcpy.env.workspace = input_gdb
+
+        # Get a list of all feature classes in the geodatabase
+        feature_classes = arcpy.ListFeatureClasses()
+
+        # Loop through each feature class and export to Shapefile
+        for fc in feature_classes:
+            output_shp = os.path.join(output_folder, f"{fc}.shp")
+            arcpy.FeatureClassToShapefile_conversion(fc, output_folder)
+            messages.addMessage(f"Exported {fc} to {output_shp}")
+
+        messages.addMessage("Batch export completed.")
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+
+class svtmsummary:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "SVTM Vegetation Summary"
+        self.description = ""
+        self.category = "Summary tools"
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName="Input region",
+            name="in_fc",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True)
+
+        param1 = arcpy.Parameter(
+            displayName="Output folder",
+            name="out_path",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input")
+
+        params = [param0, param1]
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        import arcpy
+        import os
+        # import time
+        # import tkinter as tk
+        # from tkinter import filedialog, simpledialog
+
+        # Start timer
+        # start_time = time.time()
+
+        # Initialize Tkinter and hide the main window
+        # root = tk.Tk()
+        # root.withdraw()
+
+        # Set workspace and allow overwrites
+        # arcpy.env.workspace = "C:/GIS/Projects"
+        arcpy.env.overwriteOutput = True
+        in_fc = parameters[0].valueAsText
+        gdb_folder = parameters[1].valueAsText
+        gdb_name = "SVTM_Summary"  # TODO
+        output_excel = f"{gdb_folder}\\SVTM_Summary.xlsx"  # TODO
+        """
+                if lotnum is None:
+                    gdb_name=f'SVTM_summary_{plantype}{plannum}'
+                    output_excel =f'SVTM_summary_{plantype}{plannum}.xslx'
+                else:
+                    if secnum is None:
+                        gdb_name = f'SVTM_summary_{lotnum}_{plantype}{plannum}'
+                        output_excel = f'SVTM_summary_{lotnum}_{plantype}{plannum}.xslx'
+                    else:
+                        gdb_name = f'SVTM_summary_{lotnum}_{secnum}_{plantype}{plannum}'
+                        output_excel = f'SVTM_summary_{lotnum}_{secnum}_{plantype}{plannum}.xlsx'
+        """
+        # NSW Cadastre Layer File
+        # CADASTRE_LAYER_FILE = in_fc
+
+        # Local Geodatabase Paths
+        # VEG_GDB = "C:/SVTM/SVTM_NSW_Extant_PCT_vC2_0_M2_1_106/SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview.gdb"
+        VEG_GDB = r"G:\Shared drives\01 Reference\03 Mapping Base Data\Vegetation Communities Mapping\SVTM 2024-11\SVTM_NSW_Extant_PCT_vC2_0_M2_1_106\SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview.gdb"
+        VEG_FC = os.path.join(VEG_GDB, "SVTM_NSW_Extant_PCT_vC2_0_M2_1_Quickview")
+
+        # Prompt user to select folder for the output GDB
+        # gdb_folder = filedialog.askdirectory(title="Select Folder to Save Geodatabase")
+        # if not gdb_folder:
+        #    messages.addMessage("Error: No folder selected!")
+        #    exit()
+
+        # Prompt user to enter a name for the GDB
+        # gdb_name = simpledialog.askstring("Geodatabase Name", "Enter a name for the Geodatabase (without .gdb):")
+        # if not gdb_name:
+        #    messages.addMessage("Error: No GDB name entered!")
+        #    exit()
+
+        # Construct full GDB path
+        gdb_path = os.path.join(gdb_folder, f"{gdb_name}.gdb")
+
+        # Prompt user to select a location and name for the Excel file
+        # output_excel = filedialog.asksaveasfilename(
+        #    title="Save Excel Report As",
+        #    defaultextension=".xlsx",
+        #    filetypes=[("Excel Files", "*.xlsx")]
+        # )
+        # if not output_excel:
+        #    messages.addMessage("Error: No file selected for Excel output!")
+        #    exit()
+
+        # Ensure GDB exists
+        if not arcpy.Exists(gdb_path):
+            arcpy.CreateFileGDB_management(gdb_folder, gdb_name)
+
+        # Define feature class paths
+        site_fc = in_fc  # os.path.join(gdb_path, "SiteBoundary")
+        clipped_veg_fc = os.path.join(gdb_path, "ClippedVegetation")
+        dissolved_veg_fc = os.path.join(gdb_path, "DissolvedVegetation")
+
+        # Get multiple Lot/DP inputs
+        # lot_dp_list = []
+        # while True:
+        #    lotnumber = input("Enter Lot Number (or type 'done' to finish): ").strip()
+        #    if lotnumber.lower() == 'done':
+        #        break
+        #    dpnumber = input("Enter Deposited Plan (DP) Number: ").strip()
+
+        #    if not lotnumber or not dpnumber:
+        #        messages.addMessage("Error: Lot and DP numbers cannot be empty!")
+        #        continue
+
+        # lot_dp_list.append((lotnumber, dpnumber))
+
+        # if not lot_dp_list:
+        #    messages.addMessage("Error: No Lot/DPs were entered!")
+        #    exit()
+
+        # Step 1: Extract Features for Multiple Lot/DPs and Merge
+        # messages.addMessage("Extracting property boundaries from NSW Cadastre layer file...")
+        # site_layer = "LotDP_Layer"
+        # arcpy.management.MakeFeatureLayer(CADASTRE_LAYER_FILE, site_layer)
+        """
+        temp_features = []
+
+        for lotnumber, dpnumber in lot_dp_list:
+            where_clause = f"lotnumber = '{lotnumber}' AND plannumber = {dpnumber}"
+            temp_fc = os.path.join(gdb_path, f"Temp_{lotnumber}_{dpnumber}")
+            arcpy.management.SelectLayerByAttribute(site_layer, "NEW_SELECTION", where_clause)
+            arcpy.management.CopyFeatures(site_layer, temp_fc)
+
+            if arcpy.Exists(temp_fc):
+                temp_features.append(temp_fc)
+            else:
+                messages.addMessage(f"Warning: No features found for Lot {lotnumber} DP {dpnumber}")
+
+        # Merge all selected features into one feature class
+        if temp_features:
+            arcpy.management.Merge(temp_features, site_fc)
+            #messages.addMessage(f"✅ Merged {len(temp_features)} Lot/DPs into {site_fc}")
+        #else:
+            #messages.addMessage("Error: No valid Lot/DPs found!")
+            #exit()
+        """
+        # Step 2: Clip Vegetation Data
+        if not arcpy.Exists(VEG_FC):
+            raise ValueError("Error: Vegetation feature class not found!")
+
+        messages.addMessage("Clipping vegetation data to site boundary...")
+        arcpy.analysis.Clip(VEG_FC, site_fc, clipped_veg_fc)
+        messages.addMessage("Clipping completed successfully!")
+
+        # Step 3: Dissolve by Attributes
+        messages.addMessage("Dissolving vegetation data...")
+        arcpy.management.Dissolve(
+            clipped_veg_fc, dissolved_veg_fc,
+            ["PCTID", "PCTNAME", "VEGFORM", "VEGCLASS"],
+            multi_part="MULTI_PART",
+            unsplit_lines="DISSOLVE_LINES"
+        )
+
+        # Step 4: Calculate Area in Hectares
+        messages.addMessage("Calculating area in hectares...")
+        arcpy.management.AddField(dissolved_veg_fc, "Area_Ha", "DOUBLE")
+        arcpy.management.CalculateGeometryAttributes(
+            dissolved_veg_fc,
+            [["Area_Ha", "AREA"]],
+            area_unit="HECTARES"
+        )
+
+        # Step 5: Export to Excel
+        messages.addMessage("Exporting table to Excel...")
+        arcpy.conversion.TableToExcel(dissolved_veg_fc, output_excel, "ALIAS", "DESCRIPTION")
+
+        # Calculate elapsed time
+        # end_time = time.time()
+        # elapsed_time = end_time - start_time
+
+        # Display completion message with execution time
+        messages.addMessage(f"✅ Process completed! The output Excel file is located at:\n  {output_excel}")
+        # messages.addMessage(f"⏱️ Total execution time: {elapsed_time:.2f} seconds")
+        # input("Press Enter to exit...")
+
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
+
+
+class searchlotdp:
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Search for lot and DP"
+        self.description = ""
+
+    def getParameterInfo(self):
+        """Define the tool parameters."""
+        param0 = arcpy.Parameter(
+            displayName='Lot number',
+            name='lotnum',
+            datatype='GPString',
+            parameterType='Optional',
+            direction='Input')
+        param1 = arcpy.Parameter(
+            displayName='Section number',
+            name='secnum',
+            datatype='GPString',
+            parameterType='Optional',
+            direction='Input')
+        param2 = arcpy.Parameter(
+            displayName='Plan number',
+            name='plannum',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+        param3 = arcpy.Parameter(
+            displayName='Plan Type',
+            name='plantype',
+            datatype='GPString',
+            parameterType='Required',
+            direction='Input')
+        param3.filter.type = "ValueList"
+        param3.filter.list = ['DP', 'SP']
+        param3.value = 'DP'
+
+        params = [param0, param1, param2, param3]
+
+        return params
+
+    def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter. This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        import time  # so we can sleep for a few secs after adding layer
+
+        lotnum = parameters[0].valueAsText
+        secnum = parameters[1].valueAsText
+        plannum = parameters[2].valueAsText
+        plantype = parameters[3].valueAsText
+
+        project = arcpy.mp.ArcGISProject('CURRENT')
+        active_map = project.activeMap
+
+        # messages.addMessage(active_map.name)
+        CADASTRE_LAYER_FILE = arcpy.mp.LayerFile(
+            r"G:\Shared drives\99.3 GIS Admin\Production\Layer Files\NSW Spatial - Lot.lyrx")
+
+        if active_map is None and project.listMaps() is None:
+            active_map = project.createMap(None, "Map")
+            active_map.openView()
+            mv = project.activeView
+            active_map.addLayer(CADASTRE_LAYER_FILE)
+            time.sleep(3)
+        else:
+            if project.listMaps() is not None and active_map is None:
+                messages.addErrorMessage(
+                    "No map currently active - please make a new map or open one of your existing maps.")
+                exit()
+            else:
+
+                mv = project.activeView
+
+                lyr = active_map.listLayers("Cadastre")
+
+                if len(lyr) == 0:
+                    active_map.addLayer(CADASTRE_LAYER_FILE)
+                    time.sleep(3)
+
+        lyr = active_map.listLayers("Cadastre")
+
+        if len(lyr) == 0:
+            messages.addErrorMessage("Could not find a cadastre layer - seek assistance from the GIS Team")
+        else:
+            lyr = lyr[0]
+
+            if lotnum is None:
+                where_clause = f"planlabel = '{plantype}{plannum}'"
+            else:
+                if secnum is None:
+                    where_clause = f"planlabel = '{plantype}{plannum}' and lotnumber='{lotnum}'"
+                else:
+                    where_clause = f"planlabel = '{plantype}{plannum}' and lotnumber='{lotnum}' and sectionnumber='{secnum}'"
+                # temp_fc = os.path.join(gdb_path, f"Temp_{lotnumber}_{dpnumber}")
+                messages.addMessage(mv.map.name)
+                arcpy.management.SelectLayerByAttribute(lyr.name, "NEW_SELECTION", where_clause)
+                mv.zoomToAllLayers(True)
+        return
+
+    def postExecute(self, parameters):
+        """This method takes place after outputs are processed and
+        added to the display."""
+        return
