@@ -1,0 +1,119 @@
+{
+  "@odata.context": "https://data.bionet.nsw.gov.au/biosvcapp/odata/$metadata",
+  "value": [
+    {
+      "name": "SpeciesSightings_CoreData",
+      "kind": "EntitySet",
+      "url": "SpeciesSightings_CoreData",
+      "description": "Core species sighting data - used by BionetFaunaQuery.pyt"
+    },
+    {
+      "name": "SpeciesSightings_AdditionalMeasurementsOrFacts",
+      "kind": "EntitySet",
+      "url": "SpeciesSightings_AdditionalMeasurementsOrFacts",
+      "description": "Additional measurements and facts related to species sightings"
+    },
+    {
+      "name": "VegetationClassification_PCTDefinition",
+      "kind": "EntitySet",
+      "url": "VegetationClassification_PCTDefinition",
+      "description": "Plant Community Type definitions"
+    },
+    {
+      "name": "VegetationClassification_PCTBenchmarks",
+      "kind": "EntitySet",
+      "url": "VegetationClassification_PCTBenchmarks",
+      "description": "Plant Community Type benchmarks"
+    },
+    {
+      "name": "VegetationClassification_PCTStratumData",
+      "kind": "EntitySet",
+      "url": "VegetationClassification_PCTStratumData",
+      "description": "Plant Community Type stratum data"
+    },
+    {
+      "name": "VegetationClassification_PCTGrowthForm",
+      "kind": "EntitySet",
+      "url": "VegetationClassification_PCTGrowthForm",
+      "description": "Plant Community Type growth form data"
+    },
+    {
+      "name": "NSWLandscapes_MitchellLandscapes",
+      "kind": "EntitySet",
+      "url": "NSWLandscapes_MitchellLandscapes",
+      "description": "Mitchell Landscapes of NSW"
+    },
+    {
+      "name": "ThreatenedBiodiversity_Species",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_Species",
+      "description": "Threatened species profiles"
+    },
+    {
+      "name": "ThreatenedBiodiversity_EcologicalCommunities",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_EcologicalCommunities",
+      "description": "Threatened ecological communities"
+    },
+    {
+      "name": "ThreatenedBiodiversity_Populations",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_Populations",
+      "description": "Threatened populations"
+    },
+    {
+      "name": "ThreatenedBiodiversity_KeyThreateningProcesses",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_KeyThreateningProcesses",
+      "description": "Key threatening processes"
+    },
+    {
+      "name": "ThreatenedBiodiversity_TSGeographicData",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_TSGeographicData",
+      "description": "Geographic data for threatened species"
+    },
+    {
+      "name": "ThreatenedBiodiversity_TECGeographicData",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_TECGeographicData",
+      "description": "Geographic data for threatened ecological communities"
+    },
+    {
+      "name": "ThreatenedBiodiversity_TPGeographicData",
+      "kind": "EntitySet",
+      "url": "ThreatenedBiodiversity_TPGeographicData",
+      "description": "Geographic data for threatened populations"
+    },
+    {
+      "name": "Thesaurus",
+      "kind": "EntitySet",
+      "url": "Thesaurus",
+      "description": "Controlled vocabulary and thesaurus terms"
+    },
+    {
+      "name": "SpeciesNames",
+      "kind": "EntitySet",
+      "url": "SpeciesNames",
+      "description": "Species names and taxonomy"
+    },
+    {
+      "name": "SpeciesSightings_DeletedRecords",
+      "kind": "EntitySet",
+      "url": "SpeciesSightings_DeletedRecords",
+      "description": "Deleted species sighting records for synchronization"
+    },
+    {
+      "name": "SystematicFloraSurvey_SiteData",
+      "kind": "EntitySet",
+      "url": "SystematicFloraSurvey_SiteData",
+      "description": "Systematic flora survey site data"
+    },
+    {
+      "name": "SystematicFloraSurvey_PlotData",
+      "kind": "EntitySet",
+      "url": "SystematicFloraSurvey_PlotData",
+      "description": "Systematic flora survey plot data"
+    }
+  ]
+}

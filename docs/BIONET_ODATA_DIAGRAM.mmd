@@ -1,0 +1,61 @@
+graph TB
+    subgraph "NSW BioNet OData Service"
+        subgraph "Species Sightings"
+            SS1[SpeciesSightings_CoreData<br/>⭐ Used by toolbox<br/>---<br/>ScientificName<br/>CommonName<br/>Class, Order, Family<br/>BCActStatus<br/>EPBCActStatus<br/>EventDate]
+            SS2[SpeciesSightings_AdditionalMeasurementsOrFacts]
+            SS3[SpeciesSightings_DeletedRecords]
+        end
+        
+        subgraph "Species Names"
+            SN1[SpeciesNames]
+            SN2[Thesaurus]
+        end
+        
+        subgraph "Threatened Biodiversity"
+            TB1[ThreatenedBiodiversity_Species]
+            TB2[ThreatenedBiodiversity_EcologicalCommunities]
+            TB3[ThreatenedBiodiversity_Populations]
+            TB4[ThreatenedBiodiversity_KeyThreateningProcesses]
+            TB5[ThreatenedBiodiversity_TSGeographicData]
+            TB6[ThreatenedBiodiversity_TECGeographicData]
+            TB7[ThreatenedBiodiversity_TPGeographicData]
+        end
+        
+        subgraph "Vegetation Classification"
+            VC1[VegetationClassification_PCTDefinition]
+            VC2[VegetationClassification_PCTBenchmarks]
+            VC3[VegetationClassification_PCTStratumData]
+            VC4[VegetationClassification_PCTGrowthForm]
+        end
+        
+        subgraph "NSW Landscapes"
+            NS1[NSWLandscapes_MitchellLandscapes]
+        end
+        
+        subgraph "Flora Surveys"
+            FS1[SystematicFloraSurvey_SiteData]
+            FS2[SystematicFloraSurvey_PlotData]
+        end
+    end
+    
+    SS1 -->|references| SN1
+    SS1 -.->|extends| SS2
+    SS1 -->|links to| TB1
+    
+    TB1 -->|has geo data| TB5
+    TB2 -->|has geo data| TB6
+    TB3 -->|has geo data| TB7
+    
+    FS1 -->|contains| FS2
+    
+    style SS1 fill:#e1f5fe,stroke:#01579b,stroke-width:3px
+    style TB1 fill:#ffebee,stroke:#c62828
+    style TB2 fill:#ffebee,stroke:#c62828
+    style TB3 fill:#ffebee,stroke:#c62828
+    style VC1 fill:#fff9c4,stroke:#f57f17
+    style SN1 fill:#e8f5e9,stroke:#2e7d32
+    
+    classDef primary fill:#e1f5fe,stroke:#01579b,stroke-width:3px
+    classDef threatened fill:#ffebee,stroke:#c62828
+    classDef vegetation fill:#fff9c4,stroke:#f57f17
+    classDef taxonomy fill:#e8f5e9,stroke:#2e7d32
