@@ -16,6 +16,14 @@ This toolbox provides an ArcGIS Python tool that connects to the NSW Government 
 - Returns distinct species list with conservation status
 - Outputs results as ArcGIS table
 
+## Documentation
+
+- **[OData Service Reference](docs/ODATA_SERVICE_REFERENCE.md)** - Complete reference for all available entity sets
+- **[Service Metadata](docs/ODATA_METADATA.json)** - JSON metadata for the OData service
+- **[UML Diagram](docs/BIONET_ODATA_DIAGRAM.puml)** - PlantUML diagram of service structure
+- **[Mermaid Diagram](docs/BIONET_ODATA_DIAGRAM.mmd)** - Mermaid diagram of service structure
+- **[Implementation Notes](IMPLEMENTATION_NOTES.md)** - Technical implementation details
+
 ## Requirements
 
 - ArcGIS Pro 2.x or later

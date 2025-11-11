@@ -1,0 +1,150 @@
+@startuml BioNet OData Service Structure
+
+!define ENTITY class
+!define SERVICE package
+
+title NSW BioNet OData API - Entity Set Structure
+
+SERVICE "BioNet OData Service" <<OData v4.0>> {
+  
+  SERVICE "Species Sightings" #LightBlue {
+    ENTITY SpeciesSightings_CoreData {
+      + ScientificName : String
+      + CommonName : String
+      + Class : String
+      + Order : String
+      + Family : String
+      + Kingdom : String
+      + BCActStatus : String
+      + EPBCActStatus : String
+      + SensitiveClass : String
+      + EventDate : DateTime
+      ..
+      **Used by BionetFaunaQuery.pyt**
+    }
+    
+    ENTITY SpeciesSightings_AdditionalMeasurementsOrFacts {
+      Additional measurements
+      and facts for sightings
+    }
+    
+    ENTITY SpeciesSightings_DeletedRecords {
+      Deleted records for
+      synchronization
+    }
+  }
+  
+  SERVICE "Species Names & Taxonomy" #LightGreen {
+    ENTITY SpeciesNames {
+      Species nomenclature
+      and taxonomy
+    }
+    
+    ENTITY Thesaurus {
+      Controlled vocabulary
+      and terms
+    }
+  }
+  
+  SERVICE "Threatened Biodiversity" #LightCoral {
+    ENTITY ThreatenedBiodiversity_Species {
+      Threatened species
+      profiles
+    }
+    
+    ENTITY ThreatenedBiodiversity_EcologicalCommunities {
+      Threatened ecological
+      communities
+    }
+    
+    ENTITY ThreatenedBiodiversity_Populations {
+      Threatened populations
+    }
+    
+    ENTITY ThreatenedBiodiversity_KeyThreateningProcesses {
+      Key threatening
+      processes
+    }
+    
+    ENTITY ThreatenedBiodiversity_TSGeographicData {
+      Geographic data for
+      threatened species
+    }
+    
+    ENTITY ThreatenedBiodiversity_TECGeographicData {
+      Geographic data for
+      threatened communities
+    }
+    
+    ENTITY ThreatenedBiodiversity_TPGeographicData {
+      Geographic data for
+      threatened populations
+    }
+  }
+  
+  SERVICE "Vegetation Classification" #LightYellow {
+    ENTITY VegetationClassification_PCTDefinition {
+      Plant Community Type
+      definitions
+    }
+    
+    ENTITY VegetationClassification_PCTBenchmarks {
+      PCT benchmarks
+    }
+    
+    ENTITY VegetationClassification_PCTStratumData {
+      PCT stratum data
+    }
+    
+    ENTITY VegetationClassification_PCTGrowthForm {
+      PCT growth form data
+    }
+  }
+  
+  SERVICE "NSW Landscapes" #Lavender {
+    ENTITY NSWLandscapes_MitchellLandscapes {
+      Mitchell Landscapes
+      of NSW
+    }
+  }
+  
+  SERVICE "Systematic Flora Surveys" #LightGoldenRodYellow {
+    ENTITY SystematicFloraSurvey_SiteData {
+      Flora survey
+      site data
+    }
+    
+    ENTITY SystematicFloraSurvey_PlotData {
+      Flora survey
+      plot data
+    }
+  }
+}
+
+' Relationships
+SpeciesSightings_CoreData --> SpeciesNames : "references"
+SpeciesSightings_CoreData --> ThreatenedBiodiversity_Species : "may link to"
+SpeciesSightings_CoreData ..> SpeciesSightings_AdditionalMeasurementsOrFacts : "extends"
+
+ThreatenedBiodiversity_Species --> ThreatenedBiodiversity_TSGeographicData : "has geographic data"
+ThreatenedBiodiversity_EcologicalCommunities --> ThreatenedBiodiversity_TECGeographicData : "has geographic data"
+ThreatenedBiodiversity_Populations --> ThreatenedBiodiversity_TPGeographicData : "has geographic data"
+
+note right of SpeciesSightings_CoreData
+  **Primary EntitySet used by**
+  **BionetFaunaQuery.pyt toolbox**
+  
+  Supports OData query options:
+  • $filter (fauna group)
+  • $select (field selection)
+  • $top (record limit)
+  • $orderby (sorting)
+end note
+
+note bottom of "BioNet OData Service"
+  Base URL: https://data.bionet.nsw.gov.au/biosvcapp/odata
+  Protocol: OData v4.0
+  Authentication: Basic Auth (optional for sensitive data)
+end note
+
+@enduml
