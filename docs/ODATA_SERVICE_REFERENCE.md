@@ -35,8 +35,8 @@ Contains core species sighting observations with conservation status.
 - `$filter` - Filter by fauna group (Class), date, location, etc.
 - `$select` - Select specific fields
 - `$top` - Limit number of records
-- `$orderby` - Sort results
 - `$skip` - Skip records for pagination
+- **Note:** `$orderby` is not supported on most fields; sorting is done client-side
 
 **Example Query:**
 ```
@@ -163,9 +163,9 @@ base_url = "https://data.bionet.nsw.gov.au/biosvcapp/odata/SpeciesSightings_Core
 params = {
     "$filter": "Class eq 'Mammalia'",
     "$select": "ScientificName,CommonName,Class,Order,Family,BCActStatus,EPBCActStatus",
-    "$top": "1000",
-    "$orderby": "ScientificName"
+    "$top": "1000"
 }
+# Note: Sorting is done client-side after fetching data
 ```
 
 ## Authentication

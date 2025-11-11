@@ -176,8 +176,7 @@ class BionetFaunaQueryTool(object):
         # Select fields we need and apply filter
         query_params = {
             "$select": "ScientificName,CommonName,Class,Order,Family,Kingdom,BCActStatus,EPBCActStatus,SensitiveClass,EventDate",
-            "$top": str(max_records),
-            "$orderby": "ScientificName"
+            "$top": str(max_records)
         }
         
         # Add filter if provided
@@ -221,7 +220,11 @@ class BionetFaunaQueryTool(object):
                     if sci_name and sci_name not in unique_species:
                         unique_species[sci_name] = record
                 
-                return list(unique_species.values())
+                # Sort by scientific name in Python (API doesn't allow $orderby on this field)
+                sorted_species = sorted(unique_species.values(), 
+                                      key=lambda x: x.get('ScientificName', '').lower())
+                
+                return sorted_species
             else:
                 arcpy.AddWarning("No data returned from OData API")
                 return []

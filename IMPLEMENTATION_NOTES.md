@@ -23,7 +23,7 @@ This project implements an ArcGIS Python Toolbox (.pyt) that queries the NSW Bio
 ### API Endpoint
 - **Base URL**: `https://data.bionet.nsw.gov.au/biosvcapp/odata`
 - **Entity Set**: `SpeciesSightings_CoreData`
-- **Protocol**: OData v4.0 with standard query options ($filter, $select, $top, $orderby)
+- **Protocol**: OData v4.0 with standard query options ($filter, $select, $top)
 
 ### Key Features
 
@@ -69,7 +69,8 @@ The toolbox constructs OData queries using standard query options:
 
 ```python
 # Example query for mammals
-GET /SpeciesSightings_CoreData?$filter=Class eq 'Mammalia'&$select=ScientificName,CommonName,BCActStatus,EPBCActStatus&$top=1000&$orderby=ScientificName
+GET /SpeciesSightings_CoreData?$filter=Class eq 'Mammalia'&$select=ScientificName,CommonName,BCActStatus,EPBCActStatus&$top=1000
+# Note: Results are sorted client-side after fetching ($orderby not supported by API)
 ```
 
 ### Authentication Flow
