@@ -156,7 +156,7 @@ def sanitize_text(value, max_length=None):
         return None
     try:
         s = str(value)
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
     # Unescape HTML entities (&amp; etc.)
@@ -220,7 +220,9 @@ def attempt_field_rename_order(flc):
         petrov_message("Strategy 1: Attempting field rename via updateDefinition...")
         try:
             # Find the taxonOrder field definition
-            taxon_order_field = next(f for f in fields if f['name'] == 'taxonOrder')
+            taxon_order_field = next((f for f in fields if f['name'] == 'taxonOrder'), None)
+            if not taxon_order_field:
+                raise ValueError("taxonOrder field not found in field list")
             field_def = dict(taxon_order_field)
             field_def['name'] = 'order'
             
@@ -327,13 +329,15 @@ def create_attribute_indexes(flc, index_fields=None):
         
         target = layers_or_tables[0]
         existing_indexes = target.properties.get('indexes', [])
+        if existing_indexes is None:
+            existing_indexes = []
         
         # Build index definitions
         indexes_to_add = []
         for field in index_fields:
             # Check if index already exists
             index_name = f"idx_{field}"
-            if any(idx.get('name') == index_name for idx in existing_indexes):
+            if existing_indexes and any(isinstance(idx, dict) and idx.get('name') == index_name for idx in existing_indexes):
                 petrov_message(f"Index '{index_name}' already exists, skipping")
                 continue
             
